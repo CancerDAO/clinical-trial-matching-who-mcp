@@ -3,7 +3,10 @@ name: tests
 on:
   push:
   pull_request:
+<<<<<<< HEAD
   workflow_dispatch:
+=======
+>>>>>>> b913ed9 (feat: 添加依赖)
 
 jobs:
   unittest:
@@ -16,6 +19,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
+<<<<<<< HEAD
       - run: python -m unittest discover -s skills/clinical-trial-matching-who-mcp/tests -p "test*.py" -v
 
   remote-mcp-integration:
@@ -38,3 +42,6 @@ jobs:
       - name: Explain skipped remote integration
         if: env.WHO_MCP_URL == '' || env.WHO_MCP_API_KEY == ''
         run: echo "Remote MCP integration skipped because WHO_MCP_URL or WHO_MCP_API_KEY is not configured."
+=======
+      - run: python -m unittest discover -s skills/clinical-trial-matching-who-mcp/tests -p "test*.py" -v
+>>>>>>> b913ed9 (feat: 添加依赖)

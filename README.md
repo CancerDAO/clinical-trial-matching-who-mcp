@@ -7,7 +7,11 @@
 本仓库不包含患者数据库，也不包含 WHO MCP 数据文件。运行时必须显式提供：
 
 - Python 3.10 或更高版本；
+<<<<<<< HEAD
 - 一个支持 database_metadata、execute_search_plan 和 get_trial 的 stdio 或 Streamable HTTP MCP 服务；
+=======
+- 一个支持 database_metadata、execute_search_plan 和 get_trial 的 stdio MCP 服务脚本；
+>>>>>>> b913ed9 (feat: 添加依赖)
 - 与该服务兼容的 SQLite 临床试验数据库；
 - 能按照 analysis_jobs.json 执行四个模型子技能的模型执行器。
 
@@ -20,6 +24,7 @@
     python -m pip install -r skills/clinical-trial-matching-who-mcp/requirements.txt
     python -m unittest discover -s skills/clinical-trial-matching-who-mcp/tests -p "test*.py" -v
 
+<<<<<<< HEAD
 执行真实 MCP 集成或正式 prepare 前选择一种传输：
 
 - 本地 stdio：WHO_MCP_PYTHON、WHO_MCP_SERVER、WHO_MCP_DB；
@@ -60,6 +65,14 @@ Linux / macOS：
 stdio 的显式命令行参数仍可覆盖环境变量。API key 只从环境变量读取，避免出现在进程命令行和 shell 历史中。
 
 GitHub 普通单元测试不需要任何 Secret。要启用远程集成测试，在仓库 Settings → Secrets and variables → Actions 中添加 WHO_MCP_URL 和 WHO_MCP_API_KEY。非 PR 的 push 或手动 workflow 会调用远程 MCP；未配置时该任务明确说明跳过。来自 Fork 的 PR 不运行远程任务，也拿不到 Secrets。
+=======
+执行真实 MCP 集成或正式 prepare 前设置：
+
+- WHO_MCP_PYTHON：运行 MCP 服务的 Python 可执行文件；
+- WHO_MCP_SERVER：WHO MCP stdio 服务脚本路径；
+- WHO_MCP_DB：与服务兼容的 SQLite 数据库路径；
+- MCP_REQUEST_TIMEOUT_SECONDS：可选，单个 JSON-RPC 请求超时秒数，默认 60。
+>>>>>>> b913ed9 (feat: 添加依赖)
 
 
 ## 正式流程
