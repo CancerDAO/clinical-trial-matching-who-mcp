@@ -1,0 +1,10 @@
+{
+  "version": "2.0.0",
+  "organization": "CancerDAO",
+  "date": "May 2026",
+  "abstract": "Per-trial criterion-by-criterion clinical trial eligibility evaluator. Reads parsed inclusion / exclusion criteria and patient profile, applies R1-R5 hard rules (prior same-class drug, treatment line mismatch, indication scope, organ function borderline, missing critical fields), emits verdict (match / conditional / exclude) with rationale. Replaces regex-based gating.",
+  "references": [
+    "https://github.com/ncbi-nlp/TrialMatchAI",
+    "https://github.com/CancerDAO/clinical-trial-matching-skill"
+  ]
+}

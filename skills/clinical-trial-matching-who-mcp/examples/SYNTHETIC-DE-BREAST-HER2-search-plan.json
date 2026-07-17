@@ -1,0 +1,125 @@
+{
+  "patient_id": "SYNTHETIC-DE-BREAST-HER2",
+  "treatment_lines": 3,
+  "hard_exclude": {
+    "first_line_only": true,
+    "molecular_mismatch": [
+      "HER2-negative only"
+    ]
+  },
+  "keyword_groups": [
+    {
+      "dimension": "disease_biomarker",
+      "label": "Disease exact biomarker",
+      "queries": [
+        {
+          "condition": "breast cancer",
+          "term": "HER2 positive"
+        },
+        {
+          "condition": "metastatic breast cancer",
+          "term": "HER2 IHC 3+"
+        }
+      ]
+    },
+    {
+      "dimension": "pan_tumor",
+      "label": "Pan tumor all comers",
+      "queries": [
+        {
+          "condition": "advanced solid tumor",
+          "term": "HER2 positive"
+        }
+      ]
+    },
+    {
+      "dimension": "combination_targets",
+      "label": "Combination targets",
+      "queries": [
+        {
+          "condition": "HER2 positive breast cancer",
+          "term": "HER2 CDK4/6 combination"
+        },
+        {
+          "condition": "breast cancer",
+          "term": "HER2 bispecific combination"
+        }
+      ]
+    },
+    {
+      "dimension": "pathway_resistance",
+      "label": "Pathway resistance",
+      "queries": [
+        {
+          "condition": "HER2 positive breast cancer",
+          "term": "trastuzumab resistance"
+        },
+        {
+          "condition": "breast cancer",
+          "term": "HER2 ADC resistance"
+        }
+      ]
+    },
+    {
+      "dimension": "named_drug",
+      "label": "Named drug names",
+      "queries": [
+        {
+          "condition": "breast cancer",
+          "term": "tucatinib"
+        },
+        {
+          "condition": "breast cancer",
+          "term": "zanidatamab"
+        },
+        {
+          "condition": "breast cancer",
+          "term": "margetuximab"
+        }
+      ]
+    },
+    {
+      "dimension": "cell_therapy",
+      "label": "Cell therapy",
+      "queries": [
+        {
+          "condition": "breast cancer",
+          "term": "HER2 CAR-T"
+        },
+        {
+          "condition": "breast cancer",
+          "term": "TIL therapy"
+        }
+      ]
+    },
+    {
+      "dimension": "immune",
+      "label": "Immune checkpoint",
+      "queries": [
+        {
+          "condition": "HER2 positive breast cancer",
+          "term": "PD-1"
+        },
+        {
+          "condition": "breast cancer",
+          "term": "immune bispecific"
+        }
+      ]
+    },
+    {
+      "dimension": "chinese_registry_terms",
+      "label": "Chinese registry terms",
+      "queries": [
+        {
+          "condition": "",
+          "term": "HER2阳性乳腺癌"
+        },
+        {
+          "condition": "",
+          "term": "乳腺癌 CAR-T"
+        }
+      ]
+    }
+  ],
+  "synthetic": true
+}

@@ -1,0 +1,248 @@
+{
+  "patient_summary": "Synthetic metastatic colorectal cancer patient with KRAS G12C, MSS disease, two completed standard treatment lines, ECOG 1, and adequate organ function.",
+  "treatment_lines": 2,
+  "disease_stage_filter": "metastatic",
+  "keyword_groups": [
+    {
+      "label": "1. 疾病+突变特异 (KRAS G12C CRC)",
+      "source": "both",
+      "queries": [
+        {
+          "condition": "colorectal cancer",
+          "term": "KRAS G12C"
+        },
+        {
+          "condition": "colorectal cancer",
+          "term": "KRAS G12C inhibitor"
+        },
+        {
+          "condition": "metastatic colorectal cancer",
+          "term": "KRAS"
+        },
+        {
+          "condition": null,
+          "term": "KRAS G12C colorectal"
+        }
+      ]
+    },
+    {
+      "label": "2. 泛化-实体瘤 (KRAS G12C all comers)",
+      "source": "nct",
+      "queries": [
+        {
+          "condition": "solid tumor",
+          "term": "KRAS G12C"
+        },
+        {
+          "condition": "advanced solid tumor",
+          "term": "KRAS G12C"
+        },
+        {
+          "condition": null,
+          "term": "KRAS G12C basket"
+        }
+      ]
+    },
+    {
+      "label": "3. 联合靶点 (KRAS G12C + EGFR/SHP2/SOS1)",
+      "source": "both",
+      "queries": [
+        {
+          "condition": "colorectal cancer",
+          "term": "KRAS G12C cetuximab"
+        },
+        {
+          "condition": "colorectal cancer",
+          "term": "KRAS G12C panitumumab"
+        },
+        {
+          "condition": null,
+          "term": "KRAS G12C SHP2"
+        },
+        {
+          "condition": null,
+          "term": "KRAS G12C SOS1"
+        }
+      ]
+    },
+    {
+      "label": "4. 通路靶向 (RAS-ON / pan-KRAS / 耐药策略)",
+      "source": "both",
+      "queries": [
+        {
+          "condition": null,
+          "term": "RAS multi-selective inhibitor"
+        },
+        {
+          "condition": null,
+          "term": "pan-KRAS inhibitor"
+        },
+        {
+          "condition": null,
+          "term": "RAS(ON) inhibitor"
+        },
+        {
+          "condition": null,
+          "term": "active state KRAS inhibitor"
+        },
+        {
+          "condition": "colorectal cancer",
+          "term": "RMC-6236"
+        },
+        {
+          "condition": "colorectal cancer",
+          "term": "RMC-6291"
+        }
+      ]
+    },
+    {
+      "label": "5. 具体药物名穷举 (KRAS G12C drugs)",
+      "source": "both",
+      "queries": [
+        {
+          "condition": "colorectal cancer",
+          "term": "sotorasib"
+        },
+        {
+          "condition": "colorectal cancer",
+          "term": "adagrasib"
+        },
+        {
+          "condition": "colorectal cancer",
+          "term": "divarasib"
+        },
+        {
+          "condition": "colorectal cancer",
+          "term": "glecirasib"
+        },
+        {
+          "condition": "colorectal cancer",
+          "term": "fulzerasib"
+        },
+        {
+          "condition": "colorectal cancer",
+          "term": "garsorasib"
+        },
+        {
+          "condition": "colorectal cancer",
+          "term": "olomorasib"
+        },
+        {
+          "condition": "colorectal cancer",
+          "term": "BGB-53038"
+        },
+        {
+          "condition": "colorectal cancer",
+          "term": "D3S-001"
+        },
+        {
+          "condition": "colorectal cancer",
+          "term": "JAB-21822"
+        }
+      ]
+    },
+    {
+      "label": "6. 细胞治疗 (CRC, 不限突变)",
+      "source": "both",
+      "queries": [
+        {
+          "condition": "colorectal cancer",
+          "term": "CAR-T"
+        },
+        {
+          "condition": "colorectal cancer",
+          "term": "TIL"
+        },
+        {
+          "condition": "solid tumor",
+          "term": "CEA CAR-T"
+        },
+        {
+          "condition": "solid tumor",
+          "term": "GUCY2C CAR-T"
+        },
+        {
+          "condition": "colorectal cancer",
+          "term": "TCR T cell"
+        },
+        {
+          "condition": null,
+          "term": "KRAS G12C TCR"
+        },
+        {
+          "condition": null,
+          "term": "KRAS mutation neoantigen vaccine"
+        }
+      ]
+    },
+    {
+      "label": "7. 免疫治疗 (post-PD-1, MSS CRC)",
+      "source": "both",
+      "queries": [
+        {
+          "condition": "colorectal cancer",
+          "term": "MSS bispecific"
+        },
+        {
+          "condition": "colorectal cancer",
+          "term": "MSS immunotherapy"
+        },
+        {
+          "condition": "colorectal cancer",
+          "term": "PD-1 resistance"
+        },
+        {
+          "condition": null,
+          "term": "LAG-3 colorectal MSS"
+        }
+      ]
+    },
+    {
+      "label": "8. 中文关键词 (ChiCTR)",
+      "source": "chictr",
+      "queries": [
+        {
+          "condition": null,
+          "term": "结直肠癌 KRAS G12C"
+        },
+        {
+          "condition": null,
+          "term": "结直肠癌 KRAS"
+        },
+        {
+          "condition": null,
+          "term": "结肠癌 KRAS G12C"
+        },
+        {
+          "condition": null,
+          "term": "氟泽雷赛"
+        },
+        {
+          "condition": null,
+          "term": "实体瘤 KRAS"
+        },
+        {
+          "condition": null,
+          "term": "结直肠癌 CAR-T"
+        },
+        {
+          "condition": null,
+          "term": "结直肠癌 TIL"
+        }
+      ]
+    }
+  ],
+  "hard_exclude": {
+    "first_line_only": true,
+    "molecular_mismatch": [
+      "RAS wild-type only",
+      "BRAF V600E required",
+      "MSI-H/dMMR required",
+      "HER2 amplification required",
+      "EGFR mutation required (lung)",
+      "ALK rearrangement required"
+    ]
+  },
+  "patient_id": "SYNTHETIC-CN-CRC-KRAS-G12C",
+  "synthetic": true
+}

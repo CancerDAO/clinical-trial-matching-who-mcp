@@ -1,0 +1,11 @@
+{
+  "version": "2.0.0",
+  "organization": "CancerDAO",
+  "date": "May 2026",
+  "abstract": "Per-trial efficacy contextualizer + Standard-of-Care head-to-head comparison. Pulls trial-specific or class-baseline efficacy data (with explicit evidence tier), surfaces patient's SoC options at current treatment line, and composes a vs-SoC narrative. Replaces JSON lookup tables that under-covered CRC and applied wrong drug class baselines to wrong mutations.",
+  "references": [
+    "https://github.com/CancerDAO/clinical-trial-matching-skill",
+    "NCCN clinical practice guidelines",
+    "CSCO Chinese guidelines"
+  ]
+}

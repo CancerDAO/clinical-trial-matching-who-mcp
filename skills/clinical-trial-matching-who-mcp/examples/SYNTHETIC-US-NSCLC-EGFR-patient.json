@@ -1,0 +1,42 @@
+{
+  "patient_id": "SYNTHETIC-US-NSCLC-EGFR",
+  "country": "United States",
+  "city": "Boston",
+  "patient_location": "Boston, Massachusetts",
+  "cancer_type": "non-small cell lung cancer",
+  "stage": "IV",
+  "disease_stage": "metastatic",
+  "mutations": [
+    "EGFR exon 19 deletion"
+  ],
+  "biomarkers_known": {
+    "PD-L1": "10%"
+  },
+  "treatment_lines_completed": 2,
+  "current_therapy_ongoing": false,
+  "prior_therapies": [
+    "osimertinib",
+    "carboplatin",
+    "pemetrexed"
+  ],
+  "treatment_history": [
+    {
+      "line": 1,
+      "regimen": "osimertinib",
+      "outcome": "PD",
+      "ongoing": false
+    },
+    {
+      "line": 2,
+      "regimen": "carboplatin + pemetrexed",
+      "outcome": "PD",
+      "ongoing": false
+    }
+  ],
+  "ecog": 1,
+  "organ_function": "adequate",
+  "willing_to_travel_domestic": true,
+  "willing_to_travel_internationally": false,
+  "affordability_tier": "medium",
+  "synthetic": true
+}

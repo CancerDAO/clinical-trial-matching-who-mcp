@@ -1,0 +1,46 @@
+{
+  "synthetic": true,
+  "patient_id": "SYNTHETIC-CN-CRC-KRAS-G12C",
+  "country": "China",
+  "city": "Shanghai",
+  "patient_location": "Shanghai, China",
+  "cancer_type": "colorectal cancer",
+  "stage": "IV",
+  "disease_stage": "metastatic",
+  "metastasis_sites": [
+    "liver"
+  ],
+  "mutations": [
+    "KRAS G12C"
+  ],
+  "biomarkers_known": {
+    "MSI": "MSS",
+    "TMB": 6.0
+  },
+  "treatment_lines_completed": 2,
+  "current_therapy_ongoing": false,
+  "prior_therapies": [
+    "FOLFOX",
+    "FOLFIRI",
+    "bevacizumab"
+  ],
+  "treatment_history": [
+    {
+      "line": 1,
+      "regimen": "FOLFOX",
+      "outcome": "PD",
+      "ongoing": false
+    },
+    {
+      "line": 2,
+      "regimen": "FOLFIRI + bevacizumab",
+      "outcome": "PD",
+      "ongoing": false
+    }
+  ],
+  "ecog": 1,
+  "organ_function": "adequate",
+  "willing_to_travel_domestic": true,
+  "willing_to_travel_internationally": false,
+  "affordability_tier": "medium"
+}

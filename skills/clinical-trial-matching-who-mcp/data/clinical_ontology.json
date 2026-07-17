@@ -1,0 +1,73 @@
+{
+  "schema_version": "2.0",
+  "_doc": "v2 lean ontology — aliases + chemo regimens only. Risk narratives, efficacy benchmarks, and SoC comparisons MOVED to LLM subskills (trial-risk-annotator, trial-efficacy-contextualizer, decision-synthesizer). Code is mechanism, knowledge is in subskills.",
+
+  "cancers": {
+    "CRC": {
+      "full_names": ["Colorectal Adenocarcinoma", "colorectal cancer", "colon cancer", "rectal cancer"],
+      "aliases": ["colorectal", "colon cancer", "rectal", "crc", "结直肠癌", "结肠癌", "直肠癌", "乙状结肠癌"],
+      "anti_aliases": ["neuroendocrine", "anal squamous", "carcinoid", "GIST"]
+    },
+    "PDAC": {
+      "full_names": ["Pancreatic Ductal Adenocarcinoma", "pancreatic adenocarcinoma"],
+      "aliases": ["pancreatic", "pancreas", "pdac", "胰腺癌"],
+      "anti_aliases": ["neuroendocrine", "net ", "pnet", "carcinoid", "islet cell", "endocrine tumor"]
+    },
+    "NSCLC": {
+      "full_names": ["Non-Small Cell Lung Cancer", "non-small cell lung carcinoma"],
+      "aliases": ["nsclc", "non-small cell lung", "non small cell lung", "lung cancer", "肺腺癌", "肺鳞癌", "非小细胞肺癌"],
+      "anti_aliases": ["sclc", "small cell lung", "small-cell"]
+    }
+  },
+
+  "chemo_regimens": {
+    "_doc": "Used by retrieval to detect when a trial's chemo backbone overlaps with a patient's failed regimen. Add new regimens here when patient profiles surface them.",
+    "FOLFIRINOX": {
+      "components": ["5-fu", "5-fluorouracil", "fluorouracil", "leucovorin", "irinotecan", "oxaliplatin", "folinic acid"],
+      "aliases": ["folfirinox", "mfolfirinox", "modified folfirinox"],
+      "common_in": ["PDAC", "CRC"]
+    },
+    "Gem+Nab-P (AG)": {
+      "components": ["gemcitabine", "nab-paclitaxel", "abraxane", "albumin-bound paclitaxel"],
+      "aliases": ["ag regimen", "gem/nab-p", "gemnabp"],
+      "common_in": ["PDAC"]
+    },
+    "FOLFOX": {
+      "components": ["5-fu", "leucovorin", "oxaliplatin"],
+      "aliases": ["folfox", "mfolfox6", "folfox4"],
+      "common_in": ["CRC", "gastric"]
+    },
+    "FOLFIRI": {
+      "components": ["5-fu", "leucovorin", "irinotecan"],
+      "aliases": ["folfiri"],
+      "common_in": ["CRC"]
+    },
+    "CAPOX/XELOX/KELOX": {
+      "components": ["capecitabine", "xeloda", "oxaliplatin"],
+      "aliases": ["capox", "xelox", "kelox"],
+      "common_in": ["CRC", "gastric"]
+    },
+    "TAS-102 + bev (SUNLIGHT)": {
+      "components": ["trifluridine", "tipiracil", "tas-102", "lonsurf", "bevacizumab"],
+      "aliases": ["tas102 bev", "sunlight regimen"],
+      "common_in": ["CRC"]
+    }
+  },
+
+  "therapy_classes": {
+    "_doc": "Used by R1 (prior same-class drug exclusion). LLM subskill trial-gater consumes this to decide if a trial's exclusion criteria collide with patient's prior therapies.",
+    "anti-PD-1": ["pembrolizumab", "nivolumab", "camrelizumab", "tislelizumab", "sintilimab", "toripalimab", "cemiplimab", "dostarlimab", "serplulimab"],
+    "anti-PD-L1": ["atezolizumab", "durvalumab", "avelumab", "envafolimab", "adebrelimab"],
+    "anti-CTLA-4": ["ipilimumab", "tremelimumab"],
+    "anti-VEGF": ["bevacizumab", "ramucirumab", "ziv-aflibercept"],
+    "VEGFR-TKI": ["apatinib", "regorafenib", "fruquintinib", "anlotinib", "lenvatinib", "cabozantinib", "sunitinib", "pazopanib", "sorafenib"],
+    "anti-EGFR (mAb)": ["cetuximab", "panitumumab", "necitumumab"],
+    "EGFR-TKI": ["osimertinib", "gefitinib", "erlotinib", "icotinib", "afatinib", "dacomitinib", "lazertinib"],
+    "KRAS G12C inhibitor": ["sotorasib", "adagrasib", "divarasib", "glecirasib", "fulzerasib", "garsorasib", "olomorasib", "calderasib", "MK-1084", "D3S-001", "PF-07934040", "JAB-21822", "BGB-53038", "GDC-6036"],
+    "KRAS G12D inhibitor": ["MRTX1133", "GFH375", "RMC-9805", "ASP3082", "JYP0015"],
+    "pan-RAS inhibitor": ["RMC-6236", "RMC-6291", "BI-1701963"],
+    "PARP inhibitor": ["olaparib", "niraparib", "rucaparib", "talazoparib", "fluzoparib", "pamiparib"],
+    "ALK TKI": ["crizotinib", "alectinib", "lorlatinib", "brigatinib", "ceritinib", "ensartinib"],
+    "HER2 ADC": ["trastuzumab deruxtecan", "T-DXd", "DS-8201"]
+  }
+}

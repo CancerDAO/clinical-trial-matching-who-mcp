@@ -1,0 +1,126 @@
+{
+  "patient_id": "SYNTHETIC-US-NSCLC-EGFR",
+  "treatment_lines": 2,
+  "hard_exclude": {
+    "first_line_only": true,
+    "molecular_mismatch": [
+      "EGFR wild-type only",
+      "ALK-only"
+    ]
+  },
+  "keyword_groups": [
+    {
+      "dimension": "disease_biomarker",
+      "label": "Disease exact biomarker",
+      "queries": [
+        {
+          "condition": "non-small cell lung cancer",
+          "term": "EGFR exon 19 deletion"
+        },
+        {
+          "condition": "NSCLC",
+          "term": "EGFR mutated"
+        }
+      ]
+    },
+    {
+      "dimension": "pan_tumor",
+      "label": "Pan tumor all comers",
+      "queries": [
+        {
+          "condition": "advanced solid tumor",
+          "term": "EGFR mutation"
+        }
+      ]
+    },
+    {
+      "dimension": "combination_targets",
+      "label": "Combination targets",
+      "queries": [
+        {
+          "condition": "NSCLC",
+          "term": "EGFR MET combination"
+        },
+        {
+          "condition": "NSCLC",
+          "term": "EGFR antibody combination"
+        }
+      ]
+    },
+    {
+      "dimension": "pathway_resistance",
+      "label": "Pathway resistance",
+      "queries": [
+        {
+          "condition": "NSCLC",
+          "term": "osimertinib resistance"
+        },
+        {
+          "condition": "NSCLC",
+          "term": "EGFR C797S"
+        }
+      ]
+    },
+    {
+      "dimension": "named_drug",
+      "label": "Named drug names",
+      "queries": [
+        {
+          "condition": "NSCLC",
+          "term": "lazertinib"
+        },
+        {
+          "condition": "NSCLC",
+          "term": "patritumab deruxtecan"
+        },
+        {
+          "condition": "NSCLC",
+          "term": "amivantamab"
+        }
+      ]
+    },
+    {
+      "dimension": "cell_therapy",
+      "label": "Cell therapy",
+      "queries": [
+        {
+          "condition": "NSCLC",
+          "term": "TCR-T"
+        },
+        {
+          "condition": "lung cancer",
+          "term": "CAR-T"
+        }
+      ]
+    },
+    {
+      "dimension": "immune",
+      "label": "Immune checkpoint",
+      "queries": [
+        {
+          "condition": "EGFR mutated NSCLC",
+          "term": "PD-1"
+        },
+        {
+          "condition": "NSCLC",
+          "term": "bispecific immunotherapy"
+        }
+      ]
+    },
+    {
+      "dimension": "chinese_registry_terms",
+      "label": "Chinese registry terms",
+      "queries": [
+        {
+          "condition": "",
+          "term": "非小细胞肺癌 EGFR"
+        },
+        {
+          "condition": "",
+          "term": "肺癌 CAR-T"
+        }
+      ]
+    }
+  ],
+  "synthetic": true
+}

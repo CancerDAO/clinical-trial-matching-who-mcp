@@ -1,0 +1,9 @@
+{
+  "version": "2.0.0",
+  "organization": "CancerDAO",
+  "date": "May 2026",
+  "abstract": "Per-trial mechanism-specific risk annotator, grounded in (mechanism × cancer_type × patient_state). Replaces JSON taxonomy lookup that leaked cancer-specific narratives across cancer types. Schema enforces applies_because justification for every risk emitted.",
+  "references": [
+    "https://github.com/CancerDAO/clinical-trial-matching-skill"
+  ]
+}

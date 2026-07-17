@@ -1,0 +1,2 @@
+# Runtime and test suite use only the Python standard library.
+# The separately deployed WHO MCP server manages its own dependencies.

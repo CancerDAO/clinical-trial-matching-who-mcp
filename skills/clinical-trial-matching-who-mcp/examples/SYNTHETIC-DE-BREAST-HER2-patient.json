@@ -1,0 +1,50 @@
+{
+  "patient_id": "SYNTHETIC-DE-BREAST-HER2",
+  "country": "Germany",
+  "city": "Berlin",
+  "patient_location": "Berlin, Germany",
+  "cancer_type": "HER2-positive breast cancer",
+  "stage": "IV",
+  "disease_stage": "metastatic",
+  "mutations": [],
+  "biomarkers_known": {
+    "HER2": "IHC 3+",
+    "ER": "negative",
+    "PR": "negative"
+  },
+  "treatment_lines_completed": 3,
+  "current_therapy_ongoing": false,
+  "prior_therapies": [
+    "trastuzumab",
+    "pertuzumab",
+    "docetaxel",
+    "T-DM1",
+    "trastuzumab deruxtecan"
+  ],
+  "treatment_history": [
+    {
+      "line": 1,
+      "regimen": "trastuzumab + pertuzumab + docetaxel",
+      "outcome": "PD",
+      "ongoing": false
+    },
+    {
+      "line": 2,
+      "regimen": "T-DM1",
+      "outcome": "PD",
+      "ongoing": false
+    },
+    {
+      "line": 3,
+      "regimen": "trastuzumab deruxtecan",
+      "outcome": "PD",
+      "ongoing": false
+    }
+  ],
+  "ecog": 1,
+  "organ_function": "adequate",
+  "willing_to_travel_domestic": true,
+  "willing_to_travel_internationally": true,
+  "affordability_tier": "high",
+  "synthetic": true
+}

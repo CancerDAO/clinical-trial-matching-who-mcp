@@ -1,0 +1,4 @@
+interface:
+  display_name: "WHO MCP Clinical Trial Matching"
+  short_description: "Global oncology matching with WHO ICTRP MCP"
+  default_prompt: "Use $clinical-trial-matching-who-mcp to match this oncology patient to global trials and produce a patient-facing report."
