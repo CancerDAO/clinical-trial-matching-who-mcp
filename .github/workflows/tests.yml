@@ -1,0 +1,40 @@
+name: tests
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  unittest:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.10", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - run: python -m unittest discover -s skills/clinical-trial-matching-who-mcp/tests -p "test*.py" -v
+
+  remote-mcp-integration:
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      WHO_MCP_TRANSPORT: streamable-http
+      WHO_MCP_URL: ${{ secrets.WHO_MCP_URL }}
+      WHO_MCP_API_KEY: ${{ secrets.WHO_MCP_API_KEY }}
+      MCP_REQUEST_TIMEOUT_SECONDS: "120"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Run remote MCP integration
+        if: env.WHO_MCP_URL != '' && env.WHO_MCP_API_KEY != ''
+        run: python -m unittest discover -s skills/clinical-trial-matching-who-mcp/tests -p "test_mcp_stdio_integration.py" -v
+      - name: Explain skipped remote integration
+        if: env.WHO_MCP_URL == '' || env.WHO_MCP_API_KEY == ''
+        run: echo "Remote MCP integration skipped because WHO_MCP_URL or WHO_MCP_API_KEY is not configured."
