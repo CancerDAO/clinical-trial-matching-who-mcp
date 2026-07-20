@@ -1,10 +1,6 @@
 ---
 name: clinical-trial-matching-who-mcp
 description: Use for generic multi-cancer clinical-trial matching through the WHO ICTRP MCP database while preserving the original model-executed gating, risk, efficacy and decision subskills.
-license: MIT
-metadata:
-  author: CancerDAO
-  version: "3.0.0"
 ---
 
 # Generic WHO MCP clinical-trial matching

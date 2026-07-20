@@ -1,11 +1,6 @@
 ---
 name: trial-efficacy-contextualizer
 description: Use when contextualizing a clinical trial's expected efficacy and comparing against current standard-of-care for the patient's cancer type and treatment line. Triggers when the parent clinical-trial-matching-who-mcp skill needs efficacy snapshots and vs-SoC head-to-head data per decision path. Replaces v1.7.x efficacy_lookup.py + efficacy_database.json + soc_benchmarks.json (which had only 1 CRC SoC entry, leaving most CRC patients with "vs SoC: not available" in their report).
-license: MIT
-metadata:
-  author: CancerDAO
-  version: "2.0.0"
-  parent_skill: clinical-trial-matching-who-mcp
 ---
 
 # trial-efficacy-contextualizer
