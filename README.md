@@ -2,6 +2,23 @@
 
 通用多癌种临床试验匹配编排器。项目保留原 trial-gater、风险标注、疗效语境和决策综合子技能，只替换 WHO MCP 检索、跨注册库核验、机制展示和报告边界。
 
+## 技能结构与安装
+
+本仓库采用 `skills/<name>/SKILL.md` 的扁平多技能结构，符合 `vercel-labs/skills` 的默认发现规则。仓库包含 5 个可独立发现的技能：
+
+- `clinical-trial-matching-who-mcp`：检索、核验、编排与报告生成；
+- `trial-gater`：逐条入排标准判断；
+- `trial-risk-annotator`：患者与癌种相关的风险分析；
+- `trial-efficacy-contextualizer`：疗效与论文证据语境；
+- `decision-synthesizer`：全局决策综合。
+
+克隆仓库后可用官方 CLI 检查或选择安装：
+
+    npx skills add . --list
+    npx skills add . --skill clinical-trial-matching-who-mcp
+
+主编排技能会引用其余 4 个同级子技能；需要运行完整流程时应一并安装全部技能。
+
 ## 依赖边界
 
 本仓库不包含患者数据库，也不包含 WHO MCP 数据文件。运行时必须显式提供：
@@ -18,6 +35,7 @@
 项目运行和单元测试仅使用 Python 标准库，无需安装第三方包。依赖声明用于明确这一边界：
 
     python -m pip install -r skills/clinical-trial-matching-who-mcp/requirements.txt
+    python scripts/validate_repository.py
     python -m unittest discover -s skills/clinical-trial-matching-who-mcp/tests -p "test*.py" -v
 
 执行真实 MCP 集成或正式 prepare 前选择一种传输：

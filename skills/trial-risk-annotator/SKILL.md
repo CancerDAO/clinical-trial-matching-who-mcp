@@ -1,11 +1,11 @@
 ---
 name: trial-risk-annotator
-description: Use when annotating a clinical trial's mechanism-specific risks for a specific patient and cancer type. Triggers when the parent clinical-trial-matching skill needs risk narratives for the report. Replaces v1.7.x risk_lookup.py + risk_taxonomy.json (which leaked PDAC-specific risk text onto CRC reports because the taxonomy was keyed on mechanism only, not (mechanism × cancer)).
+description: Use when annotating a clinical trial's mechanism-specific risks for a specific patient and cancer type. Triggers when the parent clinical-trial-matching-who-mcp skill needs risk narratives for the report. Replaces v1.7.x risk_lookup.py + risk_taxonomy.json (which leaked PDAC-specific risk text onto CRC reports because the taxonomy was keyed on mechanism only, not (mechanism × cancer)).
 license: MIT
 metadata:
   author: CancerDAO
   version: "2.0.0"
-  parent_skill: clinical-trial-matching
+  parent_skill: clinical-trial-matching-who-mcp
 ---
 
 # trial-risk-annotator

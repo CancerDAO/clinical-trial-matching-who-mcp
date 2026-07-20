@@ -1,11 +1,11 @@
 ---
 name: trial-gater
-description: Use when evaluating one or more clinical trials' eligibility against a specific patient profile, criterion-by-criterion. Triggers when the parent clinical-trial-matching skill needs gating verdicts (match / conditional / exclude) with R1-R5 hard rules applied. Replaces v1.7.x scoring/gating.py + regex-based rule engine.
+description: Use when evaluating one or more clinical trials' eligibility against a specific patient profile, criterion-by-criterion. Triggers when the parent clinical-trial-matching-who-mcp skill needs gating verdicts (match / conditional / exclude) with R1-R5 hard rules applied. Replaces v1.7.x scoring/gating.py + regex-based rule engine.
 license: MIT
 metadata:
   author: CancerDAO
   version: "2.0.0"
-  parent_skill: clinical-trial-matching
+  parent_skill: clinical-trial-matching-who-mcp
 ---
 
 # trial-gater

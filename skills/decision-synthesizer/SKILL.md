@@ -5,7 +5,7 @@ license: MIT
 metadata:
   author: CancerDAO
   version: "2.0.0"
-  parent_skill: clinical-trial-matching
+  parent_skill: clinical-trial-matching-who-mcp
 ---
 
 # decision-synthesizer

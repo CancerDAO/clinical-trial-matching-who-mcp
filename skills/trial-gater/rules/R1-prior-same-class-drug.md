@@ -16,7 +16,7 @@ Result: patients with prior camrelizumab (anti-PD-1) and bevacizumab + apatinib 
 
 ## Drug class reference
 
-Use the `therapy_classes` map in `skills/clinical-trial-matching/data/clinical_ontology.json`. Key classes for CRC patients:
+Use the `therapy_classes` map in `skills/clinical-trial-matching-who-mcp/data/clinical_ontology.json`. Key classes for CRC patients:
 
 | Class | Common drugs | Common exclusion phrasings |
 |---|---|---|
