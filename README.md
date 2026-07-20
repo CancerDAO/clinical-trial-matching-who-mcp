@@ -42,7 +42,10 @@
 
 - 本地 stdio：WHO_MCP_PYTHON、WHO_MCP_SERVER、WHO_MCP_DB；
 - 远程 Streamable HTTP：WHO_MCP_TRANSPORT=streamable-http、WHO_MCP_URL、WHO_MCP_API_KEY；
-- MCP_REQUEST_TIMEOUT_SECONDS：可选，单个请求超时秒数，默认 60。
+- MCP_REQUEST_TIMEOUT_SECONDS：两种传输共用的单请求超时秒数，默认 60；
+- MCP_DETAIL_CONCURRENCY：仅用于 Streamable HTTP 的详情请求并发数，默认 8；
+- WHO_PORTAL_DELTA_MAX_AGE_HOURS：门户增量允许的最大数据年龄，默认 24 小时；
+- WHO_PORTAL_CLOCK_SKEW_MINUTES：执行机时钟最多允许领先 5 分钟，范围 0–60。
 
 
 ## MCP 配置接口
@@ -112,7 +115,7 @@ formal_report_ready 只有在以下三项同时成立时才为 true：
 - MCP 全局和每个查询分支均未截断；
 - WHO 门户增量已按完全相同的 database_as_of 水位线执行。
 
-WHO 门户的注册日期增量不能发现所有“旧记录后续修改”，报告会保留这一数据源限制。增量新鲜度在 prepare 时验证并固化，不会因报告文件保存超过 24 小时而失效；窗口可用 WHO_PORTAL_DELTA_MAX_AGE_HOURS 配置。
+WHO 门户的注册日期增量不能发现所有“旧记录后续修改”，报告会保留这一数据源限制。增量新鲜度在 prepare 时验证并固化，不会因报告文件保存超过 24 小时而失效；窗口可用 WHO_PORTAL_DELTA_MAX_AGE_HOURS 配置。执行时间不得早于数据库水位线；为容纳轻微主机时钟漂移，仅允许 WHO_PORTAL_CLOCK_SKEW_MINUTES（默认 5 分钟）以内的未来时间。
 WHO ICTRP 对部分来源（包括 ClinicalTrials.gov）可能只提供国家列表而没有具名中心。国家列表命中只会归为“国家记录待核实”，不能证明存在正在开放的可及中心；NCT 编号本身也不作为美国地点证据。
 
 ## 在 Codex 中运行（无需 OpenAI API）

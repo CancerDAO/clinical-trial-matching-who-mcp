@@ -193,6 +193,27 @@ class GenericPipelineContractTests(unittest.TestCase):
             }), encoding="utf-8")
             with self.assertRaisesRegex(ValueError, "not current"):
                 pipeline._load_portal_delta(path, watermark)
+
+    def test_portal_delta_rejects_future_execution_beyond_clock_skew(self):
+        watermark = "2026-07-09T00:45:35+00:00"
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "delta.json"
+            future = dt.datetime.now().astimezone() + dt.timedelta(minutes=10)
+            path.write_text(json.dumps({
+                "status": "executed",
+                "database_as_of": watermark,
+                "executed_at": future.isoformat(),
+                "trials": [],
+            }), encoding="utf-8")
+            with mock.patch.dict(os.environ, {"WHO_PORTAL_CLOCK_SKEW_MINUTES": "5"}):
+                with self.assertRaisesRegex(ValueError, "not current"):
+                    pipeline._load_portal_delta(path, watermark)
+
+    def test_portal_clock_skew_configuration_is_bounded(self):
+        with mock.patch.dict(os.environ, {"WHO_PORTAL_CLOCK_SKEW_MINUTES": "61"}):
+            with self.assertRaisesRegex(ValueError, "between 0 and 60"):
+                pipeline._portal_clock_skew_minutes()
+
     def test_portal_delta_contract_accepts_auditable_trials(self):
         watermark = "2026-07-09T00:45:35+00:00"
         with tempfile.TemporaryDirectory() as temp:
@@ -228,6 +249,22 @@ class GenericPipelineContractTests(unittest.TestCase):
             "portal_delta": {"status": "executed", "executed_at": dt.datetime.now().astimezone().isoformat()},
         })
         self.assertTrue(all(pipeline.report_quality_gates(prepared, 2).values()))
+
+    def test_staged_quality_gate_uses_audited_workload_counts(self):
+        prepared = {
+            "analysis_workflow": "gater_then_deep_analysis",
+            "all_verified_trials": [{"id": f"T{index}"} for index in range(6)],
+            "analysis_candidate_ids": ["T1", "T2"],
+            "hard_excluded_trials": [{"id": "T3"}],
+            "analysis_scope": "staged_complete",
+            "preanalysis_filter": {"budget_omitted_count": 0},
+            "retrieval_complete": True,
+            "portal_delta": {"freshness_validated_at_prepare": True},
+        }
+        self.assertTrue(all(pipeline.report_quality_gates(prepared, 3).values()))
+        prepared["analysis_scope"] = "validation_subset"
+        self.assertFalse(pipeline.report_quality_gates(prepared, 3)["complete_analysis"])
+
     def test_candidate_selection_is_mechanism_diverse_not_disease_coded(self):
         trials = []
         for index, category in enumerate(("targeted_therapy", "immune_combination", "cell_and_biologic", "other")):
