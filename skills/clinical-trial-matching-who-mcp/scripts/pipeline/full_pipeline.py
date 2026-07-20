@@ -59,6 +59,17 @@ def _portal_max_age_hours() -> float:
     return value
 
 
+def _portal_clock_skew_minutes() -> float:
+    raw = os.environ.get("WHO_PORTAL_CLOCK_SKEW_MINUTES", "5")
+    try:
+        value = float(raw)
+    except ValueError as exc:
+        raise ValueError("WHO_PORTAL_CLOCK_SKEW_MINUTES must be numeric") from exc
+    if value < 0 or value > 60:
+        raise ValueError("WHO_PORTAL_CLOCK_SKEW_MINUTES must be between 0 and 60")
+    return value
+
+
 def _load_portal_delta(path: Path | None, database_as_of: str) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """Load an externally captured WHO portal delta with an auditable boundary."""
     if path is None:
@@ -87,7 +98,8 @@ def _load_portal_delta(path: Path | None, database_as_of: str) -> tuple[list[dic
         raise ValueError("Portal delta execution predates the MCP database watermark")
     age_hours = (now - executed_at.astimezone(now.tzinfo)).total_seconds() / 3600
     max_age_hours = _portal_max_age_hours()
-    if age_hours < -1 or age_hours > max_age_hours:
+    clock_skew_minutes = _portal_clock_skew_minutes()
+    if age_hours < -(clock_skew_minutes / 60) or age_hours > max_age_hours:
         raise ValueError(f"Portal delta artifact is not current; age_hours={age_hours:.1f}")
     trials = payload.get("trials")
     if not isinstance(trials, list):
@@ -106,6 +118,7 @@ def _load_portal_delta(path: Path | None, database_as_of: str) -> tuple[list[dic
         "limitation": payload.get("limitation") or "Registration-date filtering may miss modified older records.",
         "freshness_validated_at_prepare": True,
         "max_age_hours": max_age_hours,
+        "clock_skew_tolerance_minutes": clock_skew_minutes,
     }
     return trials, audit
 
@@ -131,13 +144,23 @@ def _portal_audit_is_current(portal: dict[str, Any]) -> bool:
         return False
     now = dt.datetime.now().astimezone()
     age_hours = (now - executed_at.astimezone(now.tzinfo)).total_seconds() / 3600
-    return -1 <= age_hours <= float(portal.get("max_age_hours") or _portal_max_age_hours())
+    skew_minutes = float(
+        portal.get("clock_skew_tolerance_minutes")
+        if portal.get("clock_skew_tolerance_minutes") is not None
+        else _portal_clock_skew_minutes()
+    )
+    return -(skew_minutes / 60) <= age_hours <= float(
+        portal.get("max_age_hours") or _portal_max_age_hours()
+    )
 
 def report_quality_gates(prepared: dict[str, Any], analyzed_count: int) -> dict[str, bool]:
     staged = prepared.get("analysis_workflow") == "gater_then_deep_analysis"
-    expected = len(prepared.get("all_verified_trials") or []) if staged else len(
-        prepared.get("prefiltered_trials") or prepared.get("all_verified_trials") or []
-    )
+    if staged:
+        expected = len(prepared.get("analysis_candidate_ids") or []) + len(
+            prepared.get("hard_excluded_trials") or []
+        )
+    else:
+        expected = len(prepared.get("prefiltered_trials") or prepared.get("all_verified_trials") or [])
     scope = prepared.get("analysis_scope") or (
         "prefilter_complete" if analyzed_count == expected else "validation_subset"
     )

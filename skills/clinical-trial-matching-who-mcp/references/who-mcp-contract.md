@@ -2,7 +2,7 @@
 
 ## Remote stdio server
 
-Use SSH key authentication and deployment-specific parameters. Never store host names, user names, passwords, or private paths in this repository.
+Use SSH key authentication or a host alias configured in `~/.ssh/config`; the helper intentionally has no password parameter. It sends the remote launch script over encrypted stdin so database and executable paths do not appear in the local SSH process arguments. Never store host names, user names, passwords, private keys, or private paths in this repository.
 
     ./scripts/run-who-mcp-over-ssh.ps1 -HostName $env:WHO_MCP_HOST -UserName $env:WHO_MCP_USER -RemoteDatabase $env:WHO_MCP_DB -RemotePython $env:WHO_MCP_PYTHON -RemoteServer $env:WHO_MCP_SERVER
 ## Required calls
@@ -39,4 +39,4 @@ prepare accepts --portal-delta with this minimum JSON contract:
       "trials": []
     }
 
-A mismatched watermark, missing execution timestamp, non-executed status, or non-list trials field is a hard error. Delta-only rows may remain detail-unverified and must therefore be handled conservatively by trial-gater. Portal status not_executed prevents formal-report readiness.
+A mismatched watermark, missing execution timestamp, non-executed status, or non-list trials field is a hard error. Execution must not predate the database watermark. A future timestamp is accepted only within `WHO_PORTAL_CLOCK_SKEW_MINUTES` (default 5, allowed range 0–60); this tolerance is written into the audit record. Delta-only rows may remain detail-unverified and must therefore be handled conservatively by trial-gater. Portal status not_executed prevents formal-report readiness.

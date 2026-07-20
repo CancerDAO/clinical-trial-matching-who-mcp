@@ -14,7 +14,6 @@ PRODUCT_ALIASES = {
 GENERIC_INTERVENTIONS = {
     "product", "drug", "treatment", "none", "solution for infusion",
     "solution for injection", "placebo", "best supportive care", "n/a", "na",
-<<<<<<< HEAD
     "not applicable", "not available", "standard of care", "soc therapy",
     "for", "clinical trial", "see study design above",
 }
@@ -38,9 +37,6 @@ DOSING_SENTENCE_TERMS = {
     "continuous administration", "accelerated escalation group", "study design above",
     "patients can be enrolled", "patient was enrolled", "once every",
     "on the premise of confirming", "will be maintained",
-=======
-    "not applicable", "not available",
->>>>>>> b913ed9 (feat: 添加依赖)
 }
 COUNTRY_ALIASES = {
     "中国": "china", "mainland china": "china", "pr china": "china",
@@ -164,35 +160,12 @@ def patient_facing_title(trial: dict[str, Any], language: str) -> str:
     if "amivantamab" in raw_title.casefold() and "folfiri" in raw_title.casefold():
         base = "Amivantamab + FOLFIRI vs Cetuximab/Bevacizumab + FOLFIRI"
     else:
-<<<<<<< HEAD
         coded = [
             name for name in names
             if re.search(r"(?i)^(?:[A-Z]{2,8}-?\d|RMC-|JAB-|BGB-|D3S-)", name)
         ]
         ordered = coded + [name for name in names if name not in coded]
         base = " + ".join(ordered[:4])
-=======
-        coded = [name for name in names if re.search(r"(?i)^(?:[A-Z]{2,8}-?\d|RMC-|JAB-|BGB-|D3S-)", name)]
-        base = " + ".join((coded or names)[:4])
-    if not base or len(base) > 120:
-        agents = re.findall(
-            r"\b(?:[A-Z]{2,8}[- ]?\d{3,8}|sotorasib|adagrasib|cetuximab|bevacizumab|amivantamab)\b", raw_title, flags=re.I,
-        )
-        agents = list(dict.fromkeys(agent.strip() for agent in agents))
-        if agents:
-            base = " + ".join(agents[:4])
-    if not base or len(base) > 120:
-        base = re.sub(
-            r"(?i)^(?:a |an )?(?:phase [^ ]+ )?(?:study of |trial of |the study of )",
-            "", raw_title,
-        ).strip(" .")
-    mechanism = trial.get("mechanism_category") or {}
-    label = mechanism.get("label_zh" if language == "zh-CN" else "label_en") or mechanism.get("label") or "Other"
-    max_base = max(40, 125 - len(label) - 3)
-    if len(base) > max_base:
-        base = base[:max_base].rsplit(" ", 1)[0].rstrip(" +,;/.-")
-    return f"{base or 'Untitled trial'} · {label}"
->>>>>>> b913ed9 (feat: 添加依赖)
 
     sentence_like = any(term in base.casefold() for term in DOSING_SENTENCE_TERMS)
     if len(base) > 120 or sentence_like:

@@ -3,12 +3,9 @@ __pycache__/
 .DS_Store
 .pytest_cache/
 .venv/
-<<<<<<< HEAD
 .env
 .env.*
 !.env.example
-=======
->>>>>>> b913ed9 (feat: 添加依赖)
 *.egg-info/
 *.log
 node_modules/
