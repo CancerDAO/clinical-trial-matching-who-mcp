@@ -56,3 +56,7 @@ class JsonRpcMcpClientTests(unittest.TestCase):
         self.addCleanup(client.close)
         with self.assertRaisesRegex(McpClientError, "timed out after 0.1s"):
             client.request("ping")
+<<<<<<< HEAD
+=======
+
+>>>>>>> b913ed9 (feat: 添加依赖)
