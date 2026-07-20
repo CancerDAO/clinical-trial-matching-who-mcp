@@ -13,6 +13,7 @@ IGNORED_PARTS = {".git", "__pycache__", ".pytest_cache"}
 FORBIDDEN_SUFFIXES = {".pyc", ".db", ".sqlite", ".sqlite3"}
 NAME_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 LINK_RE = re.compile(r"\[[^\]]+\]\(([^)]+)\)")
+PUBLIC_FRONTMATTER_FIELDS = {"name", "description"}
 
 
 def repository_files() -> list[Path]:
@@ -57,7 +58,6 @@ def validate() -> list[str]:
     skill_dirs = sorted(path for path in SKILLS_DIR.iterdir() if path.is_dir())
     if not skill_dirs:
         errors.append("no skills found under skills/")
-    available_names = {path.name for path in skill_dirs}
     for skill_dir in skill_dirs:
         skill_file = skill_dir / "SKILL.md"
         if not skill_file.exists():
@@ -68,6 +68,12 @@ def validate() -> list[str]:
         except ValueError as exc:
             errors.append(f"{skill_file.relative_to(ROOT).as_posix()}: {exc}")
             continue
+        unsupported_fields = sorted(set(frontmatter) - PUBLIC_FRONTMATTER_FIELDS)
+        if unsupported_fields:
+            errors.append(
+                f"unsupported public skill frontmatter fields in {skill_dir.name}: "
+                + ", ".join(unsupported_fields)
+            )
         name = frontmatter.get("name", "")
         description = frontmatter.get("description", "")
         if name != skill_dir.name:
@@ -78,9 +84,7 @@ def validate() -> list[str]:
             errors.append(f"skill description must contain 1-1024 characters: {skill_dir.name}")
 
         text = skill_file.read_text(encoding="utf-8")
-        parent = re.search(r"(?m)^\s+parent_skill:\s*([a-z0-9-]+)\s*$", text)
-        if parent and parent.group(1) not in available_names:
-            errors.append(f"unknown parent_skill {parent.group(1)!r}: {skill_dir.name}")
+
         for target in LINK_RE.findall(text):
             target = target.split("#", 1)[0].strip()
             if not target or target.startswith(("http://", "https://", "mailto:")):

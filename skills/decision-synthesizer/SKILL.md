@@ -1,11 +1,6 @@
 ---
 name: decision-synthesizer
 description: Use when synthesizing per-trial gating + risk + efficacy outputs into a Top-N decision report with diversity bucketing, Goals-of-Care trigger, and vs-SoC head-to-head. Triggers as the final synthesis step in clinical-trial-matching after trial-gater + trial-risk-annotator + trial-efficacy-contextualizer have run. Replaces v1.7.x synthesis/decision_paths.py + goals_of_care.py + consistency_check.py.
-license: MIT
-metadata:
-  author: CancerDAO
-  version: "2.0.0"
-  parent_skill: clinical-trial-matching-who-mcp
 ---
 
 # decision-synthesizer
