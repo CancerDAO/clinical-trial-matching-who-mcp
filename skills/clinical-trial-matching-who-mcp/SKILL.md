@@ -74,36 +74,39 @@ China patients receive Chinese report framing; other patients receive English fr
 
 ## Commands
 
+Formal patient runs must use `scripts/pipeline/run_formal_pipeline.py`. Do not
+invoke the component commands as an alternative workflow, hand-write analysis
+JSON, select a Top-N subset, or render patient-facing HTML directly.
+
 ```powershell
-python scripts/pipeline/full_pipeline.py prepare `
+python scripts/pipeline/run_formal_pipeline.py prepare `
   --patient patient.json --plan search-plan.json --db trials.db `
-  --mcp-python python --mcp-server server.py --out run
+  --mcp-python python --mcp-server server.py --run-dir run
 ```
 
 After all `gater-batch-*.json` files are complete, materialize the reduced deep workload:
 
 ```powershell
-python scripts/pipeline/analysis_batch_manager.py deep-jobs `
-  --jobs run/analysis_jobs.json --patient patient.json `
-  --gater-batch-dir run/batches --out run/deep_jobs.json
+python scripts/pipeline/run_formal_pipeline.py deep-jobs --run-dir run
 ```
 
 After the risk/efficacy/evidence `deep-batch-*.json` files and the decision output are complete, merge both stages:
 
 ```powershell
-python scripts/pipeline/analysis_batch_manager.py merge `
-  --jobs run/analysis_jobs.json --patient patient.json `
-  --batch-dir run/batches --deep-batch-dir run/deep-batches `
-  --decision run/decision_report.json --out run/analysis_bundle.json `
+python scripts/pipeline/run_formal_pipeline.py merge --run-dir run `
+  --decision run/decision_report.json `
   --model MODEL_NAME --output-language zh-CN
 ```
 
 After the canonical subskills produce `analysis_bundle.json`:
 
 ```powershell
-python scripts/pipeline/full_pipeline.py finalize `
-  --prepared run/prepared.json --analysis run/analysis_bundle.json --out run/final
+python scripts/pipeline/run_formal_pipeline.py finalize --run-dir run
 ```
+
+Run `run_formal_pipeline.py status --run-dir run` after each stage. The state
+machine refuses deep-jobs before full gater coverage, merge before full deep
+coverage, and finalize before a validated merged bundle.
 
 ## Quality gates
 
@@ -118,7 +121,9 @@ python scripts/pipeline/full_pipeline.py finalize `
 
 A positive analysis-limit or prefilter-limit is validation-only. Both default to zero. Formal staged runs require every recalled trial to receive either an auditable deterministic hard exclusion or a model gater verdict, and every `match` or `conditional` verdict to receive validated risk, efficacy and development-evidence output.
 
-finalize may render a validation artifact for engineering review, but formal_report_ready is true only when all three gates pass:
+When a gate fails, finalize emits a conspicuous `validation-report.html` audit
+summary without patient trial cards. It does not emit `report.html`.
+`formal_report_ready` is true only when all three gates pass:
 
 1. every recalled trial has a hard-rule or gater disposition, every non-excluded trial has complete deep analysis, and there are no budget omissions;
 2. neither global nor per-query MCP retrieval is truncated;
