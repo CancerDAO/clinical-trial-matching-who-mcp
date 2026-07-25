@@ -92,8 +92,81 @@ def render_html(p: dict[str, Any], path: Path) -> None:
  filters="".join(f'<button class="{"on" if key=="all" else ""}" data-filter="{key}">{esc(label)}</button>' for key,label in buttons)
  overview=[(len(trials),T("\u5019\u9009\u8bd5\u9a8c","Candidates")),(geo.get("domestic_named",0),T("\u56fd\u5185\u53ef\u53ca","In-country access")),(geo.get("country_unverified",0)+geo.get("domestic_registry",0),T("\u56fd\u5bb6\u8bb0\u5f55\u5f85\u6838\u5b9e","Country unverified")),(geo.get("overseas",0),T("\u5883\u5916","Overseas"))]
  ov="".join(f'<div class="ov-cell"><b>{n}</b><span>{esc(label)}</span></div>' for n,label in overview)
+ manifest=p.get("run_manifest") or {}; mc=manifest.get("counts") or {}
+ manifest_title=T("\u5168\u6d41\u7a0b\u8fd0\u884c\u6e05\u5355","Full-run manifest")
+ manifest_rows=[
+  (T("\u53ec\u56de","Recall"),mc.get("recall",0)),
+  (T("\u786c\u89c4\u5219\u6392\u9664","Hard exclusions"),mc.get("hard_excluded",0)),
+  ("Gater",mc.get("gater_completed",0)),
+  (T("\u6df1\u5ea6\u5206\u6790","Deep analysis"),mc.get("deep_completed",0)),
+  (T("\u9057\u6f0f","Omitted"),mc.get("omitted",0))]
+ manifest_html=f'<section class="overview"><h3>{esc(manifest_title)}</h3><div class="ov-grid">{"".join(f"<div class=ov-cell><b>{esc(value)}</b><span>{esc(label)}</span></div>" for label,value in manifest_rows)}</div><p class="manifest-hash">prepared SHA-256: {esc(manifest.get("prepared_sha256"))}<br>analysis SHA-256: {esc(manifest.get("analysis_sha256"))}</p></section>'
  script="""function applyFilter(f){document.querySelectorAll('.mechanism-group').forEach(g=>{g.querySelectorAll('details.trial').forEach(x=>x.classList.toggle('is-hidden',f!=='all'&&x.dataset.access!==f));const n=g.querySelectorAll('details.trial:not(.is-hidden)').length;g.classList.toggle('is-hidden',n===0);const c=g.querySelector('.cnt');c.textContent=n+' '+c.dataset.itemWord;});}document.querySelectorAll('.filters button').forEach(b=>b.addEventListener('click',()=>{document.querySelectorAll('.filters button').forEach(x=>x.classList.remove('on'));b.classList.add('on');applyFilter(b.dataset.filter);}));"""
  eyebrow=T(chr(20020)+chr(24202)+chr(35797)+chr(39564)+chr(21305)+chr(37197)+chr(25253)+chr(21578)+" · "+chr(24739)+chr(32773)+chr(29256),"Clinical trial matching report · Patient edition")
  database_label=T(chr(25968)+chr(25454)+chr(24211)+chr(26356)+chr(26032)+chr(26102)+chr(38388),"Database as of")
- doc=f"""<!doctype html><html lang="{p['language']}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>{esc(title)} \u00b7 {esc(patient.get('patient_id'))}</title><style>{css}</style></head><body><main class="wrap"><header class="hero"><div class="eyebrow">{eyebrow}</div><h1>{esc(title)}</h1><div class="snap"><span>{esc(patient.get('patient_id'))}</span><span>{esc(patient.get('cancer_type'))} \u00b7 {esc(patient.get('stage'))}</span><span>{esc(' / '.join(patient.get('mutations') or []))}</span><span>{esc(loc)}</span></div></header><div class="disc">{esc(disclaimer)}</div>{f'<div class="disc">{esc(validation_notice)}</div>' if validation_notice else ''}<section class="overview"><div class="ov-grid">{ov}</div></section><div class="filters">{filters}</div>{''.join(sections)}<footer>{database_label}: {esc(p['database_as_of'])} \u00b7 MCP schema {esc(p['database_metadata'].get('schema_version'))} \u00b7 WHO portal delta: {esc(delta.get('status'))}, {esc(delta.get('returned') or 0)} trial(s)</footer></main><script>{script}</script></body></html>"""
+ doc=f"""<!doctype html><html lang="{p['language']}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>{esc(title)} \u00b7 {esc(patient.get('patient_id'))}</title><style>{css}</style></head><body><main class="wrap"><header class="hero"><div class="eyebrow">{eyebrow}</div><h1>{esc(title)}</h1><div class="snap"><span>{esc(patient.get('patient_id'))}</span><span>{esc(patient.get('cancer_type'))} \u00b7 {esc(patient.get('stage'))}</span><span>{esc(' / '.join(patient.get('mutations') or []))}</span><span>{esc(loc)}</span></div></header><div class="disc">{esc(disclaimer)}</div>{f'<div class="disc">{esc(validation_notice)}</div>' if validation_notice else ''}<section class="overview"><div class="ov-grid">{ov}</div></section>{manifest_html}<div class="filters">{filters}</div>{''.join(sections)}<footer>{database_label}: {esc(p['database_as_of'])} \u00b7 MCP schema {esc(p['database_metadata'].get('schema_version'))} \u00b7 WHO portal delta: {esc(delta.get('status'))}, {esc(delta.get('returned') or 0)} trial(s)</footer></main><script>{script}</script></body></html>"""
  path.write_text(doc,encoding="utf-8")
+
+
+def render_validation_html(payload: dict[str, Any], path: Path) -> None:
+ """Render a conspicuous audit artifact without patient-facing trial cards."""
+ zh = payload.get("language") == "zh-CN"
+ manifest = payload.get("run_manifest") or {}
+ counts = manifest.get("counts") or {}
+ gates = manifest.get("quality_gates") or {}
+ coverage = manifest.get("coverage_audit") or {}
+ title = "流程验证未通过" if zh else "Formal workflow validation failed"
+ message = (
+  "该产物不是正式患者报告。质量门未全部通过，禁止将其改名或作为完整匹配结果交付。"
+  if zh else
+  "This artifact is not a formal patient report. Quality gates failed; do not rename or deliver it as a complete matching result."
+ )
+ labels = {
+  "recall": "召回数" if zh else "Recall",
+  "hard_excluded": "硬排除数" if zh else "Hard exclusions",
+  "gater_completed": "Gater完成数" if zh else "Gater completed",
+  "deep_completed": "深度分析数" if zh else "Deep analysis completed",
+  "risk_completed": "风险分析数" if zh else "Risk completed",
+  "efficacy_completed": "疗效分析数" if zh else "Efficacy completed",
+  "evidence_completed": "论文证据数" if zh else "Evidence completed",
+  "omitted": "遗漏数" if zh else "Omitted",
+ }
+ count_rows = "".join(
+  f"<tr><th>{esc(labels[key])}</th><td>{esc(counts.get(key, 0))}</td></tr>"
+  for key in labels
+ )
+ gate_rows = "".join(
+  f"<tr><th>{esc(key)}</th><td class=\"{'ok' if value else 'bad'}\">"
+  f"{'PASS' if value else 'FAIL'}</td></tr>"
+  for key, value in gates.items()
+ )
+ missing = {
+  "missing_disposition_ids": coverage.get("missing_disposition_ids") or [],
+  "missing_risk_ids": coverage.get("missing_risk_ids") or [],
+  "missing_efficacy_ids": coverage.get("missing_efficacy_ids") or [],
+  "missing_evidence_ids": coverage.get("missing_evidence_ids") or [],
+ }
+ missing_rows = "".join(
+  f"<tr><th>{esc(key)}</th><td>{esc(', '.join(values[:50]))}</td></tr>"
+  for key, values in missing.items() if values
+ ) or f"<tr><td colspan=\"2\">{esc('无集合级遗漏' if zh else 'No set-level omissions')}</td></tr>"
+ document = f"""<!doctype html>
+<html lang="{'zh-CN' if zh else 'en'}"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{esc(title)}</title>
+<style>
+body{{margin:0;background:#fff7ed;color:#28170c;font:15px/1.55 Arial,sans-serif}}
+main{{max-width:860px;margin:40px auto;padding:0 20px}}
+header{{background:#9a3412;color:#fff;padding:24px;border:6px solid #431407}}
+h1{{margin:0 0 8px;font-size:28px}}section{{background:#fff;border:2px solid #fdba74;margin-top:18px;padding:18px}}
+table{{width:100%;border-collapse:collapse}}th,td{{text-align:left;border-bottom:1px solid #fed7aa;padding:8px}}
+.ok{{color:#166534;font-weight:700}}.bad{{color:#b91c1c;font-weight:700}}
+code{{overflow-wrap:anywhere}}footer{{margin-top:20px;font-size:12px;color:#7c2d12}}
+</style></head><body><main><header><h1>{esc(title)}</h1><p>{esc(message)}</p></header>
+<section><h2>{esc('运行清单' if zh else 'Run manifest')}</h2><table>{count_rows}</table></section>
+<section><h2>{esc('质量门' if zh else 'Quality gates')}</h2><table>{gate_rows}</table></section>
+<section><h2>{esc('缺失集合' if zh else 'Missing sets')}</h2><table>{missing_rows}</table></section>
+<footer>prepared SHA-256: <code>{esc(manifest.get('prepared_sha256'))}</code><br>
+analysis SHA-256: <code>{esc(manifest.get('analysis_sha256'))}</code></footer>
+</main></body></html>"""
+ path.write_text(document, encoding="utf-8")

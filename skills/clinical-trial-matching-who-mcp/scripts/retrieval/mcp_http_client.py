@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import os
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 from urllib.error import HTTPError, URLError
@@ -30,6 +31,21 @@ class JsonRpcHttpMcpClient:
         self.protocol_version = "2024-11-05"
         self.session_id: str | None = None
         self._state_lock = threading.Lock()
+
+    @staticmethod
+    def _retry_settings() -> tuple[int, float]:
+        try:
+            retries = int(os.environ.get("MCP_TRANSIENT_RETRIES", "4"))
+            delay = float(os.environ.get("MCP_RETRY_BASE_SECONDS", "1"))
+        except ValueError as exc:
+            raise McpClientError(
+                "MCP_TRANSIENT_RETRIES and MCP_RETRY_BASE_SECONDS must be numeric"
+            ) from exc
+        if retries < 0 or retries > 10:
+            raise McpClientError("MCP_TRANSIENT_RETRIES must be between 0 and 10")
+        if delay < 0 or delay > 30:
+            raise McpClientError("MCP_RETRY_BASE_SECONDS must be between 0 and 30")
+        return retries, delay
 
     @staticmethod
     def _sse_messages(body: str) -> list[dict[str, Any]]:
@@ -59,23 +75,38 @@ class JsonRpcHttpMcpClient:
             session_id = self.session_id
         if session_id:
             headers["Mcp-Session-Id"] = session_id
-        request = Request(
-            self.url, data=json.dumps(payload, separators=(",", ":")).encode("utf-8"),
-            headers=headers, method="POST",
-        )
-        try:
-            with urlopen(request, timeout=self.timeout) as response:
-                body = response.read().decode("utf-8", errors="replace")
-                content_type = response.headers.get("Content-Type", "")
-                returned_session = response.headers.get("Mcp-Session-Id")
-                if returned_session:
-                    with self._state_lock:
-                        self.session_id = returned_session
-        except HTTPError as exc:
-            detail = exc.read().decode("utf-8", errors="replace")[:500]
-            raise McpClientError(f"Remote MCP HTTP {exc.code}: {detail or exc.reason}") from exc
-        except (URLError, TimeoutError, OSError) as exc:
-            raise McpClientError(f"Remote MCP request failed: {exc}") from exc
+        data = json.dumps(payload, separators=(",", ":")).encode("utf-8")
+        max_retries, base_delay = self._retry_settings()
+        attempt = 0
+        while True:
+            request = Request(self.url, data=data, headers=headers, method="POST")
+            try:
+                with urlopen(request, timeout=self.timeout) as response:
+                    body = response.read().decode("utf-8", errors="replace")
+                    content_type = response.headers.get("Content-Type", "")
+                    returned_session = response.headers.get("Mcp-Session-Id")
+                    if returned_session:
+                        with self._state_lock:
+                            self.session_id = returned_session
+                break
+            except HTTPError as exc:
+                detail = exc.read().decode("utf-8", errors="replace")[:500]
+                if exc.code in {502, 503, 504} and attempt < max_retries:
+                    attempt += 1
+                    time.sleep(min(base_delay * attempt, 30))
+                    continue
+                raise McpClientError(
+                    f"Remote MCP HTTP {exc.code} after {attempt + 1} attempt(s): "
+                    f"{detail or exc.reason}"
+                ) from exc
+            except (URLError, TimeoutError, OSError) as exc:
+                if attempt < max_retries:
+                    attempt += 1
+                    time.sleep(min(base_delay * attempt, 30))
+                    continue
+                raise McpClientError(
+                    f"Remote MCP request failed after {attempt + 1} attempt(s): {exc}"
+                ) from exc
         if notification and not body.strip():
             return None
         if "text/event-stream" in content_type:

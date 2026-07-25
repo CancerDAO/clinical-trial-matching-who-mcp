@@ -265,6 +265,51 @@ class GenericPipelineContractTests(unittest.TestCase):
         prepared["analysis_scope"] = "validation_subset"
         self.assertFalse(pipeline.report_quality_gates(prepared, 3)["complete_analysis"])
 
+    def test_coverage_audit_rejects_top_n_gater_subset(self):
+        prepared = {
+            "all_verified_trials": [{"id": "T1"}, {"id": "T2"}, {"id": "T3"}],
+            "hard_excluded_trials": [{"id": "T3"}],
+        }
+        by_id = {
+            "T1": {
+                "gating": {"verdict": "match"},
+                "risk_annotation": {},
+                "efficacy_context": {
+                    "evidence_search": {},
+                    "development_evidence": [],
+                },
+            },
+        }
+        audit = pipeline.analysis_coverage_audit(prepared, by_id)
+        self.assertFalse(audit["disposition_equation_valid"])
+        self.assertEqual(audit["missing_disposition_ids"], ["T2"])
+        self.assertEqual(audit["omitted_count"], 1)
+
+    def test_coverage_audit_requires_equal_deep_analysis_sets(self):
+        prepared = {
+            "all_verified_trials": [{"id": "T1"}, {"id": "T2"}],
+            "hard_excluded_trials": [],
+        }
+        by_id = {
+            "T1": {
+                "gating": {"verdict": "match"},
+                "risk_annotation": {},
+                "efficacy_context": {
+                    "evidence_search": {},
+                    "development_evidence": [],
+                },
+            },
+            "T2": {
+                "gating": {"verdict": "conditional"},
+                "risk_annotation": {},
+            },
+        }
+        audit = pipeline.analysis_coverage_audit(prepared, by_id)
+        self.assertTrue(audit["disposition_equation_valid"])
+        self.assertFalse(audit["deep_analysis_equations_valid"])
+        self.assertEqual(audit["missing_efficacy_ids"], ["T2"])
+        self.assertEqual(audit["missing_evidence_ids"], ["T2"])
+
     def test_candidate_selection_is_mechanism_diverse_not_disease_coded(self):
         trials = []
         for index, category in enumerate(("targeted_therapy", "immune_combination", "cell_and_biologic", "other")):

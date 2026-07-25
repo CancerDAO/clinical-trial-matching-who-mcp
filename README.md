@@ -74,9 +74,9 @@ Linux / macOS：
 
 公网 URL 默认必须使用 HTTPS。只有 localhost 可直接使用 HTTP；受信任私网调试可显式设置 WHO_MCP_ALLOW_INSECURE_HTTP=1。API key 只通过 Authorization: Bearer 请求头发送，不进入 URL。
 
-两种模式执行同一 prepare 命令：
+两种模式都必须通过正式状态机入口执行：
 
-    python skills/clinical-trial-matching-who-mcp/scripts/pipeline/full_pipeline.py prepare --patient patient.json --plan search-plan.json --portal-delta portal_delta.json --out run
+    python skills/clinical-trial-matching-who-mcp/scripts/pipeline/run_formal_pipeline.py prepare --patient patient.json --plan search-plan.json --portal-delta portal_delta.json --run-dir run
 
 stdio 的显式命令行参数仍可覆盖环境变量。API key 只从环境变量读取，避免出现在进程命令行和 shell 历史中。
 
@@ -85,27 +85,32 @@ GitHub 普通单元测试不需要任何 Secret。要启用远程集成测试，
 
 ## 正式流程
 
-1. prepare 调用真实 MCP，执行完整八维搜索、逐条详情读取、核验和去重，再以状态、检索排名和机制多样性构建可审计模型工作集。
-2. 外部模型执行器按 analysis_jobs.json 的批次依次运行 trial-gater、trial-risk-annotator 和 trial-efficacy-contextualizer。
-3. 所有批次结束后运行 decision-synthesizer。
-4. analysis_batch_manager.py 合并并验证全部模型输出。
-5. finalize 通过质量门后生成患者报告。
+1. `run_formal_pipeline.py prepare` 调用真实 MCP，执行完整八维搜索、逐条详情读取、核验和去重。
+2. 外部模型执行器完成 `analysis_jobs.json` 中的全部 gater 批次。
+3. `run_formal_pipeline.py deep-jobs` 验证 gater 集合完整后创建深度分析任务。
+4. 外部模型执行器完成全部风险、疗效和论文证据批次，再运行 decision-synthesizer。
+5. `run_formal_pipeline.py merge` 验证两个分析阶段的 ID 集合并生成唯一分析包。
+6. `run_formal_pipeline.py finalize` 调用 `full_pipeline.py finalize`。只有质量门全部通过才生成 `report.html`。
 
 示例：
 
-    python skills/clinical-trial-matching-who-mcp/scripts/pipeline/full_pipeline.py prepare       --patient patient.json       --plan search-plan.json       --db /path/to/trials.db       --mcp-python python       --mcp-server /path/to/server.py       --portal-delta portal_delta.json       --out run
+    python skills/clinical-trial-matching-who-mcp/scripts/pipeline/run_formal_pipeline.py prepare --patient patient.json --plan search-plan.json --mcp-transport streamable-http --portal-delta portal_delta.json --run-dir run
 
 检查批次进度：
 
-    python skills/clinical-trial-matching-who-mcp/scripts/pipeline/analysis_batch_manager.py status       --jobs run/analysis_jobs.json --batch-dir run/batches
+    python skills/clinical-trial-matching-who-mcp/scripts/pipeline/run_formal_pipeline.py status --run-dir run
 
 合并模型输出后生成报告：
 
-    python skills/clinical-trial-matching-who-mcp/scripts/pipeline/analysis_batch_manager.py merge       --jobs run/analysis_jobs.json --patient patient.json --batch-dir run/batches       --decision run/decision_report.json --out run/analysis_bundle.json       --model MODEL_NAME --output-language en
+    python skills/clinical-trial-matching-who-mcp/scripts/pipeline/run_formal_pipeline.py deep-jobs --run-dir run
 
-    python skills/clinical-trial-matching-who-mcp/scripts/pipeline/full_pipeline.py finalize       --prepared run/prepared.json --analysis run/analysis_bundle.json --out run/final
+    python skills/clinical-trial-matching-who-mcp/scripts/pipeline/run_formal_pipeline.py merge --run-dir run --decision run/decision_report.json --model MODEL_NAME --output-language en
+
+    python skills/clinical-trial-matching-who-mcp/scripts/pipeline/run_formal_pipeline.py finalize --run-dir run
 
 PowerShell 中请使用反引号或单行命令代替上面的反斜杠续行。
+
+不要手写 `gating_results.json`、`analysis_bundle.json` 或患者报告 HTML，不要自行选择 Top-N。绕过状态机的产物不属于本项目的正式报告。
 
 ## 正式报告质量门
 
@@ -115,18 +120,16 @@ formal_report_ready 只有在以下三项同时成立时才为 true：
 - MCP 全局和每个查询分支均未截断；
 - WHO 门户增量已按完全相同的 database_as_of 水位线执行。
 
+`budget_omitted_count > 0` 或任一集合等式不成立时，不生成正式患者模板。系统只输出醒目的 `validation-report.html`，其中不包含患者试验卡片。
+
 WHO 门户的注册日期增量不能发现所有“旧记录后续修改”，报告会保留这一数据源限制。增量新鲜度在 prepare 时验证并固化，不会因报告文件保存超过 24 小时而失效；窗口可用 WHO_PORTAL_DELTA_MAX_AGE_HOURS 配置。执行时间不得早于数据库水位线；为容纳轻微主机时钟漂移，仅允许 WHO_PORTAL_CLOCK_SKEW_MINUTES（默认 5 分钟）以内的未来时间。
 WHO ICTRP 对部分来源（包括 ClinicalTrials.gov）可能只提供国家列表而没有具名中心。国家列表命中只会归为“国家记录待核实”，不能证明存在正在开放的可及中心；NCT 编号本身也不作为美国地点证据。
 
 ## 在 Codex 中运行（无需 OpenAI API）
 
-可以在 Codex 桌面端交互式运行，不要求项目持有 OpenAI API key。先执行 prepare；Codex 读取 analysis_jobs.json 及其中引用的四个 SKILL.md，按批次生成规范 JSON，再由 analysis_batch_manager.py merge 和 full_pipeline.py finalize 完成报告。
+可以在 Codex 桌面端交互式运行，不要求项目持有 OpenAI API key。Codex必须通过 `run_formal_pipeline.py` 推进状态，读取其中引用的四个SKILL.md并完成所有批次。低成本子集验证命令只放在 [DEVELOPMENT_TESTING.md](DEVELOPMENT_TESTING.md)，不得用于患者正式报告。
 
-低成本真实验证建议先用：
-
-    python skills/clinical-trial-matching-who-mcp/scripts/pipeline/full_pipeline.py prepare ... --prefilter-limit 12 --analysis-limit 8
-
-prefilter-limit 限制模型工作集，analysis-limit 进一步抽取工程验证子集。只要任一预筛候选因预算被省略，质量门就会把结果标为 validation，不能冒充正式完整报告。正式运行需提高上限直至 budget_omitted_count=0。Codex 交互执行适合开发验证；无人值守 CI 或生产批量处理仍需单独的模型执行器和相应凭证。
+HTTP客户端默认对超时、网络错误及502/503/504执行最多4次退避重试。可用 `MCP_TRANSIENT_RETRIES` 和 `MCP_RETRY_BASE_SECONDS` 调整。
 
 ## 测试
 

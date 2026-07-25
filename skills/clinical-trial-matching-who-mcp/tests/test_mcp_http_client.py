@@ -5,9 +5,10 @@ import sys
 import threading
 import time
 import unittest
+from io import BytesIO
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts" / "retrieval"))
@@ -23,6 +24,7 @@ class FakeMcpHandler(BaseHTTPRequestHandler):
     active_details = 0
     max_active_details = 0
     saw_session_header = False
+    transient_failures_remaining = 0
 
     def log_message(self, format, *args):
         return
@@ -58,6 +60,11 @@ class FakeMcpHandler(BaseHTTPRequestHandler):
 
         if request_id is None:
             self._reply(202)
+            return
+
+        if method == "tools/call" and type(self).transient_failures_remaining:
+            type(self).transient_failures_remaining -= 1
+            self._reply(502, {"error": "temporary upstream failure"})
             return
 
         if method == "initialize":
@@ -144,6 +151,7 @@ class StreamableHttpClientTests(unittest.TestCase):
         FakeMcpHandler.active_details = 0
         FakeMcpHandler.max_active_details = 0
         FakeMcpHandler.saw_session_header = False
+        FakeMcpHandler.transient_failures_remaining = 0
 
     def test_complete_remote_workflow_uses_session_sse_and_concurrency(self):
         with patch.dict("os.environ", {"MCP_DETAIL_CONCURRENCY": "3"}):
@@ -164,6 +172,51 @@ class StreamableHttpClientTests(unittest.TestCase):
         client = JsonRpcHttpMcpClient(self.url, "wrong", timeout=1)
         with self.assertRaisesRegex(McpClientError, "HTTP 401"):
             client.request("initialize")
+
+    def test_transient_502_is_retried(self):
+        client = JsonRpcHttpMcpClient(self.url, FakeMcpHandler.api_key, timeout=1)
+        client.request("initialize")
+        client.notify("notifications/initialized")
+        FakeMcpHandler.transient_failures_remaining = 2
+        with patch.dict("os.environ", {
+            "MCP_TRANSIENT_RETRIES": "2",
+            "MCP_RETRY_BASE_SECONDS": "0",
+        }):
+            result = client.call_tool("database_metadata", {})
+        self.assertEqual(result["database_as_of"], "2026-07-16T00:00:00+00:00")
+        self.assertEqual(FakeMcpHandler.transient_failures_remaining, 0)
+
+    def test_retryable_status_set_covers_gateway_failures(self):
+        client = JsonRpcHttpMcpClient(self.url, FakeMcpHandler.api_key, timeout=1)
+        for status_code in (502, 503, 504):
+            error = __import__("urllib.error").error.HTTPError(
+                self.url, status_code, "temporary", {}, BytesIO(b"temporary")
+            )
+            with patch("mcp_http_client.urlopen", side_effect=[
+                error,
+                mock_response := MagicMock(),
+            ]):
+                mock_response.__enter__.return_value.read.return_value = (
+                    b'{"jsonrpc":"2.0","id":1,"result":{}}'
+                )
+                mock_response.__enter__.return_value.headers = {}
+                with patch.dict("os.environ", {
+                    "MCP_TRANSIENT_RETRIES": "1",
+                    "MCP_RETRY_BASE_SECONDS": "0",
+                }):
+                    response = client._post({
+                        "jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}
+                    })
+            self.assertEqual(response["result"], {})
+
+    def test_non_transient_401_is_not_retried(self):
+        client = JsonRpcHttpMcpClient(self.url, "wrong", timeout=1)
+        with patch.dict("os.environ", {
+            "MCP_TRANSIENT_RETRIES": "4",
+            "MCP_RETRY_BASE_SECONDS": "0",
+        }):
+            with self.assertRaisesRegex(McpClientError, "after 1 attempt"):
+                client.request("initialize")
 
     def test_plain_http_is_rejected_for_remote_hosts(self):
         with self.assertRaisesRegex(McpClientError, "requires HTTPS"):

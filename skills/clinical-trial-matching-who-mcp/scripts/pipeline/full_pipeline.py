@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import hashlib
 import json
 import os
 import sys
@@ -34,7 +35,7 @@ from analysis_contract import (
 )
 from generic_hard_rules import apply_generic_hard_rules
 from feasibility import WEIGHTS, compute_feasibility
-from html_renderer import render_html
+from html_renderer import render_html, render_validation_html
 from mcp_http_client import run_remote_who_workflow
 from mcp_stdio_client import run_who_workflow
 from mechanism_categories import CATEGORY_ORDER, classify_mechanism
@@ -153,7 +154,80 @@ def _portal_audit_is_current(portal: dict[str, Any]) -> bool:
         portal.get("max_age_hours") or _portal_max_age_hours()
     )
 
-def report_quality_gates(prepared: dict[str, Any], analyzed_count: int) -> dict[str, bool]:
+def _trial_ids(trials: list[dict[str, Any]]) -> set[str]:
+    return {str(trial.get("id") or "").strip() for trial in trials if str(trial.get("id") or "").strip()}
+
+
+def analysis_coverage_audit(
+    prepared: dict[str, Any], by_id: dict[str, dict[str, Any]]
+) -> dict[str, Any]:
+    """Prove complete disposition and deep-analysis coverage with explicit ID sets."""
+    recall_ids = _trial_ids(prepared.get("all_verified_trials") or [])
+    hard_excluded_ids = _trial_ids(prepared.get("hard_excluded_trials") or [])
+    gater_ids = set(by_id)
+    dispositions_disjoint = not (hard_excluded_ids & gater_ids)
+    disposition_ids = hard_excluded_ids | gater_ids
+
+    non_excluded_ids = {
+        trial_id for trial_id, item in by_id.items()
+        if (item.get("gating") or {}).get("verdict") in {"match", "conditional"}
+    }
+    risk_ids = {
+        trial_id for trial_id, item in by_id.items()
+        if isinstance(item.get("risk_annotation"), dict)
+    }
+    efficacy_ids = {
+        trial_id for trial_id, item in by_id.items()
+        if isinstance(item.get("efficacy_context"), dict)
+    }
+    evidence_ids = {
+        trial_id for trial_id, item in by_id.items()
+        if isinstance((item.get("efficacy_context") or {}).get("evidence_search"), dict)
+        and isinstance((item.get("efficacy_context") or {}).get("development_evidence"), list)
+    }
+    disposition_complete = dispositions_disjoint and disposition_ids == recall_ids
+    deep_complete = (
+        risk_ids == non_excluded_ids
+        and efficacy_ids == non_excluded_ids
+        and evidence_ids == non_excluded_ids
+    )
+    return {
+        "recall_count": len(recall_ids),
+        "hard_excluded_count": len(hard_excluded_ids),
+        "gater_completed_count": len(gater_ids),
+        "non_excluded_count": len(non_excluded_ids),
+        "risk_completed_count": len(risk_ids),
+        "efficacy_completed_count": len(efficacy_ids),
+        "evidence_completed_count": len(evidence_ids),
+        "omitted_count": len(recall_ids - disposition_ids),
+        "unexpected_disposition_count": len(disposition_ids - recall_ids),
+        "disposition_overlap_count": len(hard_excluded_ids & gater_ids),
+        "missing_disposition_ids": sorted(recall_ids - disposition_ids),
+        "unexpected_disposition_ids": sorted(disposition_ids - recall_ids),
+        "missing_risk_ids": sorted(non_excluded_ids - risk_ids),
+        "missing_efficacy_ids": sorted(non_excluded_ids - efficacy_ids),
+        "missing_evidence_ids": sorted(non_excluded_ids - evidence_ids),
+        "extra_deep_analysis_ids": sorted(
+            (risk_ids | efficacy_ids | evidence_ids) - non_excluded_ids
+        ),
+        "disposition_equation_valid": disposition_complete,
+        "deep_analysis_equations_valid": deep_complete,
+    }
+
+
+def _sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as source:
+        for chunk in iter(lambda: source.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def report_quality_gates(
+    prepared: dict[str, Any],
+    analyzed_count: int,
+    coverage_audit: dict[str, Any] | None = None,
+) -> dict[str, bool]:
     staged = prepared.get("analysis_workflow") == "gater_then_deep_analysis"
     if staged:
         expected = len(prepared.get("analysis_candidate_ids") or []) + len(
@@ -171,6 +245,13 @@ def report_quality_gates(prepared: dict[str, Any], analyzed_count: int) -> dict[
             scope in {"complete", "complete_recall", "prefilter_complete", "staged_complete"}
             and analyzed_count == expected
             and no_budget_omissions
+            and (
+                coverage_audit is None
+                or (
+                    coverage_audit.get("disposition_equation_valid") is True
+                    and coverage_audit.get("deep_analysis_equations_valid") is True
+                )
+            )
         ),
         "complete_retrieval": bool(prepared.get(
             "retrieval_complete", not (prepared.get("search_stats") or {}).get("query_truncation_count")
@@ -332,6 +413,7 @@ def finalize(*, prepared_path: Path, analysis_path: Path, out_dir: Path) -> dict
     patient = prepared["patient"]
     candidates = prepared["analysis_candidates"]
     by_id = validate_analysis_bundle(analysis_bundle, patient, prepared["analysis_candidate_ids"])
+    coverage_audit = analysis_coverage_audit(prepared, by_id)
     language = _language(patient)
     trials: list[dict[str, Any]] = []
     for source in candidates:
@@ -381,8 +463,27 @@ def finalize(*, prepared_path: Path, analysis_path: Path, out_dir: Path) -> dict
     counts = dict(Counter(trial["gating"]["verdict"] for trial in trials))
     counts = {key: counts.get(key, 0) for key in ("match", "conditional", "exclude")}
     geography = dict(Counter(trial["country_assessment"]["class"] for trial in trials))
-    quality_gates = report_quality_gates(prepared, len(trials))
+    quality_gates = report_quality_gates(prepared, len(trials), coverage_audit)
     formal_ready = all(quality_gates.values())
+    run_manifest = {
+        "schema_version": "formal-run-manifest-v1",
+        "prepared_sha256": _sha256(prepared_path),
+        "analysis_sha256": _sha256(analysis_path),
+        "generated_at": dt.datetime.now().astimezone().isoformat(timespec="seconds"),
+        "counts": {
+            "recall": coverage_audit["recall_count"],
+            "hard_excluded": coverage_audit["hard_excluded_count"],
+            "gater_completed": coverage_audit["gater_completed_count"],
+            "deep_completed": coverage_audit["non_excluded_count"],
+            "risk_completed": coverage_audit["risk_completed_count"],
+            "efficacy_completed": coverage_audit["efficacy_completed_count"],
+            "evidence_completed": coverage_audit["evidence_completed_count"],
+            "omitted": coverage_audit["omitted_count"],
+        },
+        "coverage_audit": coverage_audit,
+        "quality_gates": quality_gates,
+        "formal_report_ready": formal_ready,
+    }
     payload = {
         "schema_version": "generic-who-mcp-final-v1",
         "analysis_schema_version": analysis_bundle["schema_version"],
@@ -390,6 +491,7 @@ def finalize(*, prepared_path: Path, analysis_path: Path, out_dir: Path) -> dict
         "formal_report_ready": formal_ready,
         "report_mode": "formal" if formal_ready else "validation",
         "quality_gates": quality_gates,
+        "run_manifest": run_manifest,
         "stages": [
             "patient_structuring", "8-dimension_MCP_recall", "canonical_registry_deduplication",
             "get_trial_verification", "original_trial_gater", "feasibility_scoring",
@@ -417,7 +519,13 @@ def finalize(*, prepared_path: Path, analysis_path: Path, out_dir: Path) -> dict
     }
     out_dir.mkdir(parents=True, exist_ok=True)
     (out_dir / "pipeline.json").write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-    render_html(payload, out_dir / "report.html")
+    (out_dir / "run-manifest.json").write_text(
+        json.dumps(run_manifest, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+    if formal_ready:
+        render_html(payload, out_dir / "report.html")
+    else:
+        render_validation_html(payload, out_dir / "validation-report.html")
     return payload
 
 
