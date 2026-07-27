@@ -9,12 +9,12 @@ This skill changes the retrieval and registry-verification boundary. It does not
 
 ## Non-negotiable architecture
 
-`patient structure + original eight-dimensional plan` -> `real WHO MCP` -> `one verifier/deduplicator` -> `generic structured hard-rule triage` -> `trial-gater for every remaining trial` -> `risk/efficacy/evidence only for match or conditional` -> `decision-synthesizer` -> `mechanism classifier` -> `one patient-report renderer`.
+`patient structure + original eight-dimensional plan` -> `real WHO MCP + automatic WHO registration-date delta` -> `one verifier/deduplicator` -> `direct-registry live status verification` -> `registry-status exclusion + generic structured hard-rule triage` -> `deterministic all-batch model executor` -> `trial-gater for every remaining trial` -> `risk/efficacy/evidence only for match or conditional` -> `decision-synthesizer` -> `mechanism classifier` -> `one patient-report renderer`.
 
 A formal report has two executable stages separated by model work:
 
-1. `full_pipeline.py prepare` calls the MCP server through JSON-RPC stdio, retrieves metadata, runs every search branch, calls `get_trial`, verifies/deduplicates details, computes operational feasibility and writes `analysis_jobs.json`.
-2. The model first executes canonical `trial-gater` for every non-hard-excluded candidate. `analysis_batch_manager.py deep-jobs` then creates risk/efficacy/evidence work only for `match` and `conditional` verdicts. Model-gated exclusions remain in the full audit without paying for deep analysis. `decision-synthesizer` runs once after both stages.
+1. `full_pipeline.py prepare` calls the MCP server, reads its watermark, runs the complete search plan against the public WHO advanced-search portal, merges the registration-date delta, calls `get_trial`, deduplicates, attempts direct-registry status verification, applies conservative deterministic exclusions, and writes `analysis_jobs.json`.
+2. `run_formal_pipeline.py execute` enumerates every unfinished batch and invokes the configured `MODEL_BATCH_RUNNER_JSON` command. It validates exact ID coverage, retries failures, resumes existing valid outputs, creates deep jobs only after complete gating, and runs the decision skill once after complete deep analysis.
 3. `full_pipeline.py finalize` validates every subskill contract and renders only after complete coverage. It rejects heuristic/example analysis and missing trial outputs.
 
 The canonical subskills are sibling directories, without `-who-mcp` forks:
@@ -48,6 +48,11 @@ Use the real stdio MCP tools `database_metadata`, `execute_search_plan`, and `ge
 `who_mcp_verifier.py` is the only final deduplication authority. It uses canonical primary/secondary registry IDs, normalized CTIS IDs and strict protocol-core identifiers. Title similarity is never sufficient for deduplication.
 
 Keep named sites separate from country-only records. A national registry ID may be displayed under in-country access, but the card must state that a named center is unverified. A model may summarize location evidence; it may not invent a center.
+
+The live verifier uses the ClinicalTrials.gov v2 API for NCT records and opens the
+direct source-registry URL for other records. Only an explicit inactive registry
+status is a deterministic exclusion. Network errors and unparseable pages remain
+eligible for gater review and are disclosed as unverified.
 
 ## Model analysis contract
 
@@ -84,13 +89,17 @@ python scripts/pipeline/run_formal_pipeline.py prepare `
   --mcp-python python --mcp-server server.py --run-dir run
 ```
 
-After all `gater-batch-*.json` files are complete, materialize the reduced deep workload:
+Configure one model runner command. It must read the JSON input path and write
+strict JSON to the output path:
 
 ```powershell
-python scripts/pipeline/run_formal_pipeline.py deep-jobs --run-dir run
+$env:MODEL_BATCH_RUNNER_JSON='["python","model_runner.py","--input","{input}","--output","{output}"]'
+python scripts/pipeline/run_formal_pipeline.py execute --run-dir run --model MODEL_NAME
 ```
 
-After the risk/efficacy/evidence `deep-batch-*.json` files and the decision output are complete, merge both stages:
+The manual `deep-jobs`, `merge`, and `finalize` commands remain available for
+diagnosis, but formal testing should use `execute` so the model cannot choose a
+subset or stop between stages.
 
 ```powershell
 python scripts/pipeline/run_formal_pipeline.py merge --run-dir run `
@@ -127,6 +136,9 @@ summary without patient trial cards. It does not emit `report.html`.
 
 1. every recalled trial has a hard-rule or gater disposition, every non-excluded trial has complete deep analysis, and there are no budget omissions;
 2. neither global nor per-query MCP retrieval is truncated;
-3. the WHO portal delta artifact is executed against the exact current database_as_of watermark.
+3. data freshness is level A or B: level A has a current WHO portal delta; level B
+   permits a database snapshot within `WHO_MCP_DATABASE_MAX_AGE_HOURS` when every
+   recalled candidate received a direct-registry verification attempt. Level C is
+   validation-only.
 
 The jobs contract carries target_language. Patient-facing rationale, eligibility, risk and efficacy narratives must be written in that language.

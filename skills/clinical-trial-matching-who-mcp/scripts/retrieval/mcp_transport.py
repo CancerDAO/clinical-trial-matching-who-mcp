@@ -21,6 +21,51 @@ class McpTransport(Protocol):
 DetailLoader = Callable[[list[str]], list[dict[str, Any]]]
 
 
+def audit_search_completeness(
+    search: dict[str, Any], *, max_per_query: int, total_limit: int
+) -> dict[str, Any]:
+    """Normalize completeness flags, including responses from older MCP servers."""
+    stats = dict(search.get("search_stats") or {})
+    query_audit = [dict(item) for item in search.get("query_audit") or []]
+    inferred_queries: list[dict[str, Any]] = []
+    for item in query_audit:
+        returned = int(item.get("returned") or 0)
+        query_limit = int(item.get("max_per_query") or max_per_query)
+        explicitly_complete = (
+            item.get("has_more") is False
+            or item.get("complete") is True
+            or item.get("exhausted") is True
+        )
+        if returned >= query_limit and not explicitly_complete:
+            item["truncated"] = True
+            item["truncation_inferred"] = True
+            inferred_queries.append({
+                "label": item.get("label"),
+                "condition": item.get("condition"),
+                "term": item.get("term"),
+                "returned": returned,
+                "limit": query_limit,
+            })
+
+    returned_total = int(stats.get("returned") or len(search.get("results") or []))
+    explicitly_globally_complete = (
+        stats.get("has_more") is False
+        or stats.get("complete") is True
+        or stats.get("exhausted") is True
+    )
+    if returned_total >= total_limit and not explicitly_globally_complete:
+        stats["global_truncated"] = True
+        stats["global_truncation_inferred"] = True
+    stats["query_truncation_count"] = sum(
+        bool(item.get("truncated")) for item in query_audit
+    )
+    if inferred_queries:
+        stats["inferred_truncated_queries"] = inferred_queries
+    search["search_stats"] = stats
+    search["query_audit"] = query_audit
+    return search
+
+
 def execute_who_workflow(
     client: McpTransport,
     *,
@@ -58,6 +103,9 @@ def execute_who_workflow(
         "max_per_query": max_per_query,
         "total_limit": total_limit,
     })
+    search = audit_search_completeness(
+        search, max_per_query=max_per_query, total_limit=total_limit
+    )
     registry_ids = [
         registry_id
         for hit in search.get("results") or []

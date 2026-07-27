@@ -34,6 +34,7 @@ ANALYSIS_TRIAL_FIELDS = (
     "country_assessment", "patient_country", "patient_country_site_count",
     "patient_country_location_record_count", "patient_country_sites", "database_as_of",
     "last_update_date", "resolved_source_url", "verification", "exclude_reason",
+    "live_registry_verification",
     "hard_excluded", "hard_exclusion",
 )
 
