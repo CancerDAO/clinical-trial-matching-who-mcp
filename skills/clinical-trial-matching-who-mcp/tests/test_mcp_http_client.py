@@ -14,6 +14,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts" / "retrieval"))
 
 from mcp_http_client import JsonRpcHttpMcpClient, run_remote_who_workflow
+from mcp_transport import audit_search_completeness
 from mcp_stdio_client import McpClientError
 
 
@@ -167,6 +168,35 @@ class StreamableHttpClientTests(unittest.TestCase):
         self.assertEqual([item["id"] for item in result["details"]], ["NCT1", "NCT2", "NCT3"])
         self.assertTrue(FakeMcpHandler.saw_session_header)
         self.assertGreater(FakeMcpHandler.max_active_details, 1)
+
+    def test_old_server_exact_query_cap_is_conservatively_marked_truncated(self):
+        search = audit_search_completeness({
+            "results": [{"id": "NCT1"}],
+            "search_stats": {"returned": 1},
+            "query_audit": [{
+                "label": "broad",
+                "returned": 40,
+                "max_per_query": 40,
+                "truncated": False,
+            }],
+        }, max_per_query=40, total_limit=300)
+        self.assertEqual(search["search_stats"]["query_truncation_count"], 1)
+        self.assertTrue(search["query_audit"][0]["truncation_inferred"])
+
+    def test_explicit_complete_query_at_cap_is_not_marked_truncated(self):
+        search = audit_search_completeness({
+            "results": [{"id": "NCT1"}],
+            "search_stats": {"returned": 1, "complete": True},
+            "query_audit": [{
+                "label": "narrow",
+                "returned": 40,
+                "max_per_query": 40,
+                "truncated": False,
+                "complete": True,
+                "has_more": False,
+            }],
+        }, max_per_query=40, total_limit=300)
+        self.assertEqual(search["search_stats"]["query_truncation_count"], 0)
 
     def test_wrong_api_key_is_identifiable(self):
         client = JsonRpcHttpMcpClient(self.url, "wrong", timeout=1)

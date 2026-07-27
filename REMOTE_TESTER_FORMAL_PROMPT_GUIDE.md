@@ -24,12 +24,16 @@
    skills/clinical-trial-matching-who-mcp/scripts/pipeline/run_formal_pipeline.py
 4. 从 prepare 开始，使用远程 Streamable HTTP MCP。API Key只能从环境变量读取，不能写入文件、命令参数、日志或报告。
 5. 禁止设置 prefilter-limit 或 analysis-limit，禁止自行选择Top-N，禁止只分析“高相关”子集。
-6. prepare后，逐批完成analysis_jobs.json中的全部trial-gater任务。每个召回试验必须满足：
+6. prepare后，不要自行读取和选择批次。配置 `MODEL_BATCH_RUNNER_JSON`；如果使用
+   已安装的Claude Code等命令行Agent，也可配置
+   `MODEL_AGENT_COMMAND_JSON=["claude","-p","--output-format","text"]`。然后运行：
+   python skills/clinical-trial-matching-who-mcp/scripts/pipeline/run_formal_pipeline.py execute --run-dir <运行目录> --model <模型名>
+   确定性执行器会完成全部trial-gater、deep analysis、decision、merge和finalize。每个召回试验必须满足：
    召回ID集合 = 硬规则排除ID集合 ∪ gater完成ID集合
-7. 只有全部gater批次完成后，才能运行run_formal_pipeline.py deep-jobs。
+7. 不要手动跳转状态；由execute命令在全部gater批次完成后自动创建deep-jobs。
 8. 对全部match/conditional试验完成risk、efficacy和development evidence分析。必须满足：
    match/conditional ID集合 = risk完成集合 = efficacy完成集合 = evidence完成集合
-9. 完成decision-synthesizer后，只能运行run_formal_pipeline.py merge和finalize。
+9. decision-synthesizer、merge和finalize由execute命令在集合校验通过后自动运行。
 10. 禁止手写gating_results.json、analysis_bundle.json、pipeline.json或HTML报告。
 11. 正式患者报告只能是full_pipeline.py finalize间接生成的final/report.html。
 12. 如果只生成validation-report.html，说明流程不完整。不要把它改名为report.html，也不要宣称全流程完成；继续补齐状态文件指出的缺失项。

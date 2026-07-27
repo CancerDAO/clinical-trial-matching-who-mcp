@@ -14,6 +14,7 @@ sys.path.insert(0, str(HERE.parent))
 from analysis_batch_manager import collect_trials, create_deep_jobs, merge, status
 from analysis_contract import load_json, report_language
 from full_pipeline import finalize, prepare
+from model_batch_executor import execute_batches, execute_decision
 
 
 STATE_NAME = "formal-run-state.json"
@@ -82,6 +83,8 @@ def prepare_formal(args: argparse.Namespace) -> dict[str, Any]:
         analysis_limit=0,
         batch_size=args.batch_size,
         portal_delta_path=Path(args.portal_delta) if args.portal_delta else None,
+        portal_delta_mode=getattr(args, "portal_delta_mode", "off"),
+        live_registry_verification=not getattr(args, "skip_live_registry_verification", True),
     )
     state = {
         "schema_version": "formal-pipeline-state-v1",
@@ -203,6 +206,39 @@ def finalize_formal(run_dir: Path) -> dict[str, Any]:
     return state
 
 
+def execute_formal(run_dir: Path, *, model: str, timeout: float, retries: int) -> dict[str, Any]:
+    state = _load_state(run_dir)
+    if state["stage"] == "gater_pending":
+        execute_batches(
+            Path(state["gater_jobs_path"]), Path(state["gater_batch_dir"]),
+            output_prefix="gater-batch", retries=retries, timeout=timeout,
+        )
+        create_formal_deep_jobs(run_dir)
+        state = _load_state(run_dir)
+    if state["stage"] == "deep_pending":
+        execute_batches(
+            Path(state["deep_jobs_path"]), Path(state["deep_batch_dir"]),
+            output_prefix="deep-batch", retries=retries, timeout=timeout,
+        )
+        from analysis_batch_manager import combine_analysis_stages
+        gater, _ = collect_trials(Path(state["gater_batch_dir"]), "gater-batch-*.json")
+        deep, _ = collect_trials(Path(state["deep_batch_dir"]), "deep-batch-*.json")
+        interim = run_dir / "decision-analysis-input.json"
+        _write_json(interim, {"analyzed_trials": combine_analysis_stages(gater, deep)})
+        decision = run_dir / "decision_report.json"
+        execute_decision(
+            patient_path=Path(state["patient_path"]), analysis_path=interim,
+            skill_path=HERE.parents[3] / "decision-synthesizer" / "SKILL.md",
+            output_path=decision, retries=retries, timeout=timeout,
+        )
+        patient = load_json(Path(state["patient_path"]))
+        merge_formal(run_dir, decision, model, report_language(patient))
+        state = _load_state(run_dir)
+    if state["stage"] == "analysis_merged":
+        return finalize_formal(run_dir)
+    return state
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
@@ -224,6 +260,14 @@ def main() -> None:
     prepare_parser.add_argument("--total-limit", type=int, default=20000)
     prepare_parser.add_argument("--batch-size", type=int, default=5)
     prepare_parser.add_argument("--portal-delta")
+    prepare_parser.add_argument(
+        "--portal-delta-mode", choices=("auto", "file", "off"), default="auto",
+        help="auto queries the WHO portal; file validates --portal-delta; off is validation-only",
+    )
+    prepare_parser.add_argument(
+        "--skip-live-registry-verification", action="store_true",
+        help="Validation/debug only; formal freshness will fail without a current portal delta.",
+    )
 
     for command in ("status", "deep-jobs", "finalize"):
         command_parser = sub.add_parser(command)
@@ -234,6 +278,11 @@ def main() -> None:
     merge_parser.add_argument("--decision", required=True)
     merge_parser.add_argument("--model", required=True)
     merge_parser.add_argument("--output-language", choices=("zh-CN", "en"), required=True)
+    execute_parser = sub.add_parser("execute")
+    execute_parser.add_argument("--run-dir", required=True)
+    execute_parser.add_argument("--model", required=True)
+    execute_parser.add_argument("--timeout-seconds", type=float, default=1800)
+    execute_parser.add_argument("--retries", type=int, default=2)
 
     args = parser.parse_args()
     run_dir = Path(getattr(args, "run_dir", ".")).resolve()
@@ -244,12 +293,16 @@ def main() -> None:
     elif args.command == "deep-jobs":
         result = create_formal_deep_jobs(run_dir)
     elif args.command == "merge":
-        patient = load_json(_load_state(run_dir)["patient_path"])
+        patient = load_json(Path(_load_state(run_dir)["patient_path"]))
         expected_language = report_language(patient)
         if args.output_language != expected_language:
             raise ValueError(f"output-language must be {expected_language}")
         result = merge_formal(
             run_dir, Path(args.decision), args.model, args.output_language
+        )
+    elif args.command == "execute":
+        result = execute_formal(
+            run_dir, model=args.model, timeout=args.timeout_seconds, retries=args.retries
         )
     else:
         result = finalize_formal(run_dir)

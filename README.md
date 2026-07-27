@@ -155,4 +155,45 @@ production-runs、test-artifacts、数据库和缓存默认被 .gitignore 排除
 
     python skills/clinical-trial-matching-who-mcp/scripts/render/rerender_pipeline.py --pipeline run/pipeline.json --out run/rerendered
 
+## 自动增量、实时核验与确定性模型执行
+
+正式 `prepare` 默认使用 `--portal-delta-mode auto`。程序先读取 MCP
+`database_as_of`，再按完整八维搜索计划访问 WHO ICTRP 高级搜索门户，限定登记日期，
+生成并合并可审计的 `who-portal-delta-v1` 数据。WHO 的日期字段是登记日期代理，
+不能发现所有旧记录更新，因此随后仍会直接访问来源注册库核验招募状态。
+
+NCT 记录通过 ClinicalTrials.gov v2 API 核验；其他记录打开其直接注册网址。
+只有直接来源明确返回终止、完成、撤回、暂停或不再招募时才规则排除。网页打不开、
+状态无法解析或注册库暂时故障时保留到 gater，并在报告中披露。
+
+模型阶段不再要求测试人员逐批自行推进。配置一个读取 `{input}`、写入 `{output}`
+的模型命令：
+
+    MODEL_BATCH_RUNNER_JSON=["python","model_runner.py","--input","{input}","--output","{output}"]
+
+如果本机已经安装可从 stdin 接收提示词、从 stdout 返回结果的 Agent CLI，可使用仓库自带适配器：
+
+    MODEL_AGENT_COMMAND_JSON=["claude","-p","--output-format","text"]
+
+`MODEL_BATCH_RUNNER_JSON` 和 `MODEL_AGENT_COMMAND_JSON` 二选一。后者会由
+`cli_model_runner.py` 包装为执行器所需的文件输入/输出协议，不需要测试模型自行遍历目录。
+
+然后执行：
+
+    python skills/clinical-trial-matching-who-mcp/scripts/pipeline/run_formal_pipeline.py execute --run-dir run --model MODEL_NAME
+
+执行器会遍历所有遗漏批次、校验每批 ID、失败重试、断点续跑，并自动推进
+gater → deep jobs → risk/efficacy/evidence → decision → merge → finalize。
+
+数据新鲜度分为三级：A 为当前 WHO 增量；B 为数据库处于
+`WHO_MCP_DATABASE_MAX_AGE_HOURS` 窗口内且所有召回均尝试直接注册库核验；
+C 为新鲜度不足。A/B 可通过新鲜度门，C 只能生成验证报告。
+B 级还要求直接注册库访问错误率不超过 `LIVE_REGISTRY_MAX_ERROR_RATE`
+（默认 0.25），因此“全部请求失败”不会被误判为实时核验完成。自动增量原始产物
+保存在运行目录的 `portal_delta.json`。
+
+WHO 官方说明公开门户支持搜索结果 XML 导出，但持续 crawling 和 Web Service
+可能需要另行申请访问。当前自动增量使用低频、限速的公开高级搜索表单，适合开发测试；
+生产中的持续批量运行应向 WHO ICTRP 申请相应访问并遵守其使用条件。
+
 该命令保留原 `formal_report_ready` 和临床分析 provenance，不会把 validation 产物提升为正式报告。

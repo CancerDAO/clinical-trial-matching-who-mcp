@@ -11,6 +11,18 @@ from generic_hard_rules import apply_generic_hard_rules, evaluate_generic_hard_r
 
 
 class GenericHardRuleTests(unittest.TestCase):
+    def test_explicit_constraints_are_derived_from_inclusion_text(self):
+        patient = {"age_years": 72, "ecog": 2, "sex": "male"}
+        trial = {"id": "T-text", "parsed_criteria": {
+            "inclusion": ["Age <= 70 years", "ECOG performance status 0-1"]
+        }}
+        result = evaluate_generic_hard_rules(patient, trial)
+        self.assertTrue(result["hard_exclude"])
+        self.assertEqual(
+            {item["rule_id"] for item in result["triggered_rules"]},
+            {"GHR-AGE-MAX", "GHR-ECOG-MAX"},
+        )
+
     def test_clear_structured_conflicts_are_all_audited(self):
         patient = {"age_years": 17, "sex_at_birth": "female", "ecog": 3,
                    "treatment_lines_completed": 4, "pregnant": True}
