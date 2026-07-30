@@ -2,9 +2,10 @@
 from __future__ import annotations
 
 import datetime as dt
-import json
 from pathlib import Path
 from typing import Any
+
+from io_utils import load_json
 
 SCHEMA_VERSION = "clinical-subskills-analysis-v1"
 JOBS_SCHEMA_VERSION = "clinical-analysis-jobs-v2"
@@ -15,6 +16,41 @@ SUBSKILLS = (
     "decision-synthesizer",
 )
 VERDICTS = {"match", "conditional", "exclude"}
+GATING_FIELDS = frozenset({
+    "verdict", "confidence", "inclusion_evaluation", "exclusion_evaluation",
+    "hard_rules_triggered", "rationale", "blockers_satisfied", "blockers_failed",
+    "blockers_pending", "advisors_unknown",
+})
+GATING_LIST_FIELDS = frozenset({
+    "inclusion_evaluation", "exclusion_evaluation", "hard_rules_triggered",
+    "blockers_satisfied", "blockers_failed", "blockers_pending",
+})
+RISK_FIELDS = frozenset({
+    "trial_mechanisms_identified", "patient_cancer_context", "risks",
+    "risks_considered_but_omitted",
+})
+EFFICACY_FIELDS = frozenset({
+    "efficacy_snapshot", "vs_soc", "redundancy_with_existing_options",
+    "development_evidence", "evidence_search",
+})
+PATIENT_STAGE_FIELDS = {
+    "gater": {
+        "patient_id", "country", "city", "report_language", "sex", "age",
+        "cancer_type", "histology", "stage", "disease_stage", "metastasis_sites",
+        "mutations", "biomarkers_known", "treatment_lines_completed",
+        "current_therapy_ongoing", "current_therapy_status", "prior_therapies",
+        "treatment_history", "planned_therapies", "ecog", "organ_function",
+        "organ_function_note", "laboratory_values", "comorbidities", "allergies", "current_medications",
+        "missing_critical_information",
+    },
+    "deep": {
+        "patient_id", "country", "report_language", "sex", "age", "cancer_type",
+        "histology", "stage", "disease_stage", "metastasis_sites", "mutations",
+        "biomarkers_known", "treatment_lines_completed", "current_therapy_status",
+        "prior_therapies", "treatment_history", "ecog", "organ_function",
+        "laboratory_values", "comorbidities", "allergies", "current_medications",
+    },
+}
 
 
 def report_language(patient: dict[str, Any]) -> str:
@@ -26,6 +62,13 @@ def report_language(patient: dict[str, Any]) -> str:
     return "zh-CN" if country in {"china", "\u4e2d\u56fd", "mainland china"} else "en"
 
 
+def compact_patient_for_stage(patient: dict[str, Any], stage: str) -> dict[str, Any]:
+    fields = PATIENT_STAGE_FIELDS.get(stage)
+    if not fields:
+        return dict(patient)
+    return {key: patient[key] for key in fields if key in patient}
+
+
 ANALYSIS_TRIAL_FIELDS = (
     "id", "trial_uid", "primary_registry_id", "registry_ids", "title", "scientific_title",
     "brief_summary", "disease_text", "interventions", "intervention_summary", "phases",
@@ -34,13 +77,29 @@ ANALYSIS_TRIAL_FIELDS = (
     "country_assessment", "patient_country", "patient_country_site_count",
     "patient_country_location_record_count", "patient_country_sites", "database_as_of",
     "last_update_date", "resolved_source_url", "verification", "exclude_reason",
+    "live_registry_verification",
     "hard_excluded", "hard_exclusion",
 )
 
+DEEP_ANALYSIS_TRIAL_FIELDS = (
+    "id", "trial_uid", "primary_registry_id", "registry_ids", "title",
+    "scientific_title", "brief_summary", "disease_text", "interventions",
+    "intervention_summary", "phases", "overall_status", "sponsor",
+    "mechanism_category", "database_as_of", "last_update_date",
+    "resolved_source_url", "live_registry_verification",
+)
 
-def compact_trial_for_analysis(trial: dict[str, Any]) -> dict[str, Any]:
+
+def compact_trial_for_analysis(
+    trial: dict[str, Any], stage: str = "gater",
+) -> dict[str, Any]:
     """Drop bulky registry payloads that do not inform the four model subskills."""
-    compact = {key: trial[key] for key in ANALYSIS_TRIAL_FIELDS if key in trial}
+    fields = (
+        DEEP_ANALYSIS_TRIAL_FIELDS
+        if stage == "deep"
+        else ANALYSIS_TRIAL_FIELDS
+    )
+    compact = {key: trial[key] for key in fields if key in trial}
     sites = list(compact.get("patient_country_sites") or [])
     if len(sites) > 10:
         compact["patient_country_sites"] = sites[:10]
@@ -85,6 +144,7 @@ def build_analysis_jobs(
     """Build first-stage gater packets for every non-hard-excluded candidate."""
     skill_paths = {name: str((skills_root / name / "SKILL.md").resolve()) for name in SUBSKILLS}
     target_language = report_language(patient)
+    stage_patient = compact_patient_for_stage(patient, "gater")
     missing = [name for name, path in skill_paths.items() if not Path(path).exists()]
     if missing:
         raise AnalysisContractError(f"Missing canonical subskills: {', '.join(missing)}")
@@ -96,7 +156,7 @@ def build_analysis_jobs(
         batches.append({
             "batch_id": f"clinical-gater-{start // max(1, batch_size) + 1:03d}",
             "stage": "gater",
-            "patient": patient,
+            "patient": stage_patient,
             "trials": batch,
             "required_execution_order": ["trial-gater"],
             "output_schema": SCHEMA_VERSION,
@@ -169,22 +229,27 @@ def build_deep_analysis_jobs(
     ]
     size = max(1, batch_size)
     target_language = report_language(patient)
+    stage_patient = compact_patient_for_stage(patient, "deep")
     batches = []
     for start in range(0, len(selected), size):
         rows = [
-            {**compact_trial_for_analysis(trial), "gating": gating}
+            {**compact_trial_for_analysis(trial, "deep"), "gating": gating}
             for _, trial, gating in selected[start:start + size]
         ]
         batches.append({
             "batch_id": f"clinical-deep-{start // size + 1:03d}",
             "stage": "deep",
-            "patient": patient,
+            "patient": stage_patient,
             "trials": rows,
             "required_execution_order": ["trial-risk-annotator", "trial-efficacy-contextualizer"],
             "output_schema": SCHEMA_VERSION,
             "target_language": target_language,
             "language_instruction": "Write all patient-facing risk and efficacy narratives in target_language.",
-            "evidence_instruction": "Search for agent-specific preclinical and prior clinical publications and emit development_evidence plus evidence_search. Never infer that a publication exists merely because a trial is recruiting.",
+            "evidence_instruction": "Use publication_prefetch as the auditable search result. Assess candidate applicability and emit development_evidence plus evidence_search. Do not claim an additional live search or invent publications.",
+            "conciseness_instruction": (
+                "Prefer short evidence-grounded fields. Do not repeat eligibility criteria, "
+                "gating rationale, publication metadata, or the same caveat in multiple fields."
+            ),
         })
     selected_ids = {trial_id for trial_id, _, _ in selected}
     return {
@@ -213,27 +278,44 @@ def _validate_gating(item: dict[str, Any]) -> None:
     confidence = gating.get("confidence")
     if not isinstance(confidence, (int, float)) or not 0 <= confidence <= 1:
         raise AnalysisContractError(f"{item.get('trial_id')}: gating confidence must be 0..1")
-    for key in ("inclusion_evaluation", "exclusion_evaluation", "hard_rules_triggered", "blockers_satisfied", "blockers_failed", "blockers_pending"):
+    for key in GATING_LIST_FIELDS:
         if not isinstance(gating.get(key), list):
             raise AnalysisContractError(f"{item.get('trial_id')}: gating.{key} must be a list")
     _require(str(gating.get("rationale") or "").strip(), f"{item.get('trial_id')}: gating rationale is required")
 
 
-_CANCER_ALIASES = {
-    "crc": ("crc", "colorectal cancer", "colorectal carcinoma", "结直肠癌", "结肠癌", "直肠癌"),
-    "nsclc": ("nsclc", "non-small cell lung cancer", "non small cell lung cancer", "非小细胞肺癌"),
-    "sclc": ("sclc", "small cell lung cancer", "小细胞肺癌"),
-    "hcc": ("hcc", "hepatocellular carcinoma", "肝细胞癌"),
-    "rcc": ("rcc", "renal cell carcinoma", "肾细胞癌"),
-    "pdac": ("pdac", "pancreatic ductal adenocarcinoma", "胰腺导管腺癌"),
-    "tnbc": ("tnbc", "triple-negative breast cancer", "triple negative breast cancer", "三阴性乳腺癌"),
-}
+def _load_cancer_aliases() -> dict[str, tuple[str, ...]]:
+    ontology_path = Path(__file__).resolve().parents[2] / "data" / "clinical_ontology.json"
+    ontology = load_json(ontology_path)
+    aliases: dict[str, tuple[str, ...]] = {}
+    for code, entry in (ontology.get("cancers") or {}).items():
+        terms = tuple(
+            dict.fromkeys(
+                str(term).strip().casefold()
+                for term in [
+                    code,
+                    *(entry.get("full_names") or []),
+                    *(entry.get("aliases") or []),
+                ]
+                if str(term).strip()
+            )
+        )
+        for term in terms:
+            aliases[term] = terms
+    return aliases
+
+
+_CANCER_ALIASES = _load_cancer_aliases()
 
 
 def _cancer_context_matches(cancer: str, context: str) -> bool:
     cancer_folded = cancer.strip().casefold()
     context_folded = context.strip().casefold()
-    if not cancer_folded or cancer_folded in context_folded or context_folded in cancer_folded:
+    if not cancer_folded:
+        return True
+    if not context_folded:
+        return False
+    if cancer_folded in context_folded or context_folded in cancer_folded:
         return True
     terms = _CANCER_ALIASES.get(cancer_folded, (cancer_folded,))
     return any(term.casefold() in context_folded for term in terms)
@@ -283,6 +365,27 @@ def _validate_efficacy(item: dict[str, Any]) -> None:
         _require(vs_soc.get("head_to_head_summary"), f"{item.get('trial_id')}: vs_soc summary is required")
 
 
+def validate_stage_item(
+    item: dict[str, Any], stage: str, patient: dict[str, Any]
+) -> None:
+    """Validate one model result at the stage boundary so invalid batches can retry."""
+    _require(isinstance(item, dict), "Model result item must be an object")
+    _require(str(item.get("trial_id") or "").strip(), "Model result requires trial_id")
+    if stage == "gater":
+        _validate_gating(item)
+        return
+    if stage == "deep":
+        _validate_gating(item)
+        _require(
+            item["gating"]["verdict"] in {"match", "conditional"},
+            f"{item.get('trial_id')}: deep analysis requires match or conditional gating",
+        )
+        _validate_risk(item, patient)
+        _validate_efficacy(item)
+        return
+    raise AnalysisContractError(f"Unsupported model batch stage: {stage}")
+
+
 def validate_analysis_bundle(
     bundle: dict[str, Any], patient: dict[str, Any], expected_trial_ids: list[str]
 ) -> dict[str, dict[str, Any]]:
@@ -325,8 +428,7 @@ def validate_analysis_bundle(
 
 
 def normalized_report_analysis(item: dict[str, Any]) -> dict[str, Any]:
-    """Map original subskill outputs to the report contract and repair safe encoding corruption."""
-    item = repair_mojibake(item)
+    """Map validated UTF-8 subskill outputs to the report contract."""
     gating = item["gating"]
     risk = item.get("risk_annotation") or {"risks": []}
     efficacy = item.get("efficacy_context") or {}
@@ -381,7 +483,3 @@ def normalized_report_analysis(item: dict[str, Any]) -> dict[str, Any]:
             "evidence_search": efficacy.get("evidence_search") or {},
         },
     }
-
-
-def load_json(path: Path) -> dict[str, Any]:
-    return json.loads(path.read_text(encoding="utf-8-sig"))

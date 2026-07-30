@@ -1,5 +1,6 @@
 {
   "patient_id": "SYNTHETIC-DE-BREAST-HER2",
+  "age": 61,
   "country": "Germany",
   "city": "Berlin",
   "patient_location": "Berlin, Germany",
@@ -42,6 +43,10 @@
     }
   ],
   "ecog": 1,
+  "kps": 80,
+  "comorbidities": [
+    "controlled hypothyroidism"
+  ],
   "organ_function": "adequate",
   "willing_to_travel_domestic": true,
   "willing_to_travel_internationally": true,

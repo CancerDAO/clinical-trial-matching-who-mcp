@@ -22,7 +22,6 @@ SOFTWARE.
 
 ---
 
-Portions of this repository under `repo/` are derived from NCBI TrialGPT
-(https://github.com/ncbi-nlp/TrialGPT), which is a United States Government
-Work in the public domain. See `repo/LICENSE.NCBI-TrialGPT` for the full
-NCBI/NLM notice and the required citation.
+Third-party acknowledgements and citations are listed in `NOTICE.md`. Data
+retrieved from external clinical-trial registries is not licensed under this
+software license; users must comply with the applicable source terms.

@@ -17,6 +17,46 @@
       "full_names": ["Non-Small Cell Lung Cancer", "non-small cell lung carcinoma"],
       "aliases": ["nsclc", "non-small cell lung", "non small cell lung", "lung cancer", "肺腺癌", "肺鳞癌", "非小细胞肺癌"],
       "anti_aliases": ["sclc", "small cell lung", "small-cell"]
+    },
+    "SCLC": {
+      "full_names": ["Small Cell Lung Cancer"],
+      "aliases": ["sclc", "small cell lung cancer", "小细胞肺癌"],
+      "anti_aliases": ["nsclc", "non-small cell lung"]
+    },
+    "HCC": {
+      "full_names": ["Hepatocellular Carcinoma"],
+      "aliases": ["hcc", "hepatocellular carcinoma", "肝细胞癌"],
+      "anti_aliases": ["cholangiocarcinoma", "胆管癌"]
+    },
+    "RCC": {
+      "full_names": ["Renal Cell Carcinoma"],
+      "aliases": ["rcc", "renal cell carcinoma", "肾细胞癌"],
+      "anti_aliases": []
+    },
+    "TNBC": {
+      "full_names": ["Triple-Negative Breast Cancer"],
+      "aliases": ["tnbc", "triple-negative breast cancer", "triple negative breast cancer", "三阴性乳腺癌"],
+      "anti_aliases": []
+    },
+    "BREAST": {
+      "full_names": ["Breast Cancer"],
+      "aliases": ["breast cancer", "breast carcinoma", "乳腺癌"],
+      "anti_aliases": []
+    },
+    "GASTRIC": {
+      "full_names": ["Gastric Cancer"],
+      "aliases": ["gastric cancer", "stomach cancer", "胃癌"],
+      "anti_aliases": []
+    },
+    "OVARIAN": {
+      "full_names": ["Ovarian Cancer"],
+      "aliases": ["ovarian cancer", "ovarian carcinoma", "卵巢癌"],
+      "anti_aliases": []
+    },
+    "CHOLANGIOCARCINOMA": {
+      "full_names": ["Cholangiocarcinoma"],
+      "aliases": ["cholangiocarcinoma", "bile duct cancer", "胆管癌"],
+      "anti_aliases": ["hepatocellular carcinoma"]
     }
   },
 

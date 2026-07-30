@@ -12,6 +12,7 @@ import datetime as dt
 import hashlib
 import json
 import os
+import re
 import sys
 from collections import Counter
 from pathlib import Path
@@ -33,6 +34,8 @@ from analysis_contract import (
     build_analysis_jobs, load_json, normalized_report_analysis, report_language,
     validate_analysis_bundle,
 )
+from io_utils import write_json_atomic
+from patient_input import load_patient_input
 from generic_hard_rules import apply_generic_hard_rules
 from feasibility import WEIGHTS, compute_feasibility
 from html_renderer import render_html, render_validation_html
@@ -40,8 +43,13 @@ from mcp_http_client import run_remote_who_workflow
 from mcp_stdio_client import run_who_workflow
 from mechanism_categories import CATEGORY_ORDER, classify_mechanism
 from registry_presentation import assess_country_evidence, patient_facing_title, resolved_trial_url
-from search_plan import validate_search_plan
+from search_plan import (
+    build_baseline_search_plan, validate_search_plan,
+    validate_search_plan_for_patient,
+)
 from who_mcp_adapter import merge_sources
+from who_portal_delta import build_delta
+from direct_registry_verifier import verify_and_partition
 from who_mcp_verifier import verify_batch
 
 
@@ -71,7 +79,9 @@ def _portal_clock_skew_minutes() -> float:
     return value
 
 
-def _load_portal_delta(path: Path | None, database_as_of: str) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+def _load_portal_delta(
+    path: Path | None, database_as_of: str, expected_plan_sha256: str = ""
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """Load an externally captured WHO portal delta with an auditable boundary."""
     if path is None:
         return [], {
@@ -81,6 +91,15 @@ def _load_portal_delta(path: Path | None, database_as_of: str) -> tuple[list[dic
             "limitation": "WHO portal registration date is not a reliable record-last-update filter.",
         }
     payload = load_json(path)
+    if payload.get("schema_version") != "who-portal-delta-v1":
+        raise ValueError("Portal delta artifact has an unsupported schema_version")
+    if payload.get("generator") != "who_portal_delta.py":
+        raise ValueError("Portal delta artifact has unrecognized generator provenance")
+    plan_sha256 = str(payload.get("search_plan_sha256") or "")
+    if not re.fullmatch(r"[0-9a-f]{64}", plan_sha256):
+        raise ValueError("Portal delta artifact must include search_plan_sha256")
+    if expected_plan_sha256 and plan_sha256 != expected_plan_sha256:
+        raise ValueError("Portal delta search plan does not match the formal run")
     if payload.get("status") != "executed":
         raise ValueError("Portal delta artifact must have status='executed'")
     if payload.get("database_as_of") != database_as_of:
@@ -105,6 +124,21 @@ def _load_portal_delta(path: Path | None, database_as_of: str) -> tuple[list[dic
     trials = payload.get("trials")
     if not isinstance(trials, list):
         raise ValueError("Portal delta artifact trials must be a list")
+    query_audit = payload.get("query_audit")
+    control_query = payload.get("control_query")
+    if not isinstance(query_audit, list) or not query_audit:
+        raise ValueError("Portal delta artifact must include a non-empty query_audit")
+    if any(
+        not isinstance(item, dict)
+        or item.get("complete") is not True
+        or int(item.get("returned") or 0) != int(item.get("portal_total") or 0)
+        for item in query_audit
+    ):
+        raise ValueError("Portal delta query audit is incomplete or truncated")
+    if not isinstance(control_query, dict) or control_query.get("complete") is not True:
+        raise ValueError("Portal delta artifact must include a successful control_query")
+    if int(control_query.get("query_variants") or 0) != len(query_audit):
+        raise ValueError("Portal delta control_query does not match query_audit")
     audit = {
         "status": "executed",
         "boundary_type": "registration_date_proxy",
@@ -112,10 +146,12 @@ def _load_portal_delta(path: Path | None, database_as_of: str) -> tuple[list[dic
         "executed_at": payload["executed_at"],
         "returned": len(trials),
         "source": payload.get("source") or "WHO ICTRP portal",
+        "generator": payload["generator"],
+        "search_plan_sha256": plan_sha256,
         "date_start": payload.get("date_start"),
         "date_end": payload.get("date_end"),
-        "query_audit": payload.get("query_audit") or [],
-        "control_query": payload.get("control_query") or {},
+        "query_audit": query_audit,
+        "control_query": control_query,
         "limitation": payload.get("limitation") or "Registration-date filtering may miss modified older records.",
         "freshness_validated_at_prepare": True,
         "max_age_hours": max_age_hours,
@@ -133,9 +169,23 @@ def _candidate_rank(trial: dict[str, Any]) -> tuple[Any, ...]:
 
 
 def _portal_audit_is_current(portal: dict[str, Any]) -> bool:
-    if portal.get("freshness_validated_at_prepare") is True:
-        return True
     if portal.get("status") != "executed" or not portal.get("executed_at"):
+        return False
+    query_audit = portal.get("query_audit")
+    control_query = portal.get("control_query")
+    if (
+        not isinstance(query_audit, list)
+        or not query_audit
+        or any(
+            not isinstance(item, dict)
+            or item.get("complete") is not True
+            or int(item.get("returned") or 0) != int(item.get("portal_total") or 0)
+            for item in query_audit
+        )
+        or not isinstance(control_query, dict)
+        or control_query.get("complete") is not True
+        or int(control_query.get("query_variants") or 0) != len(query_audit)
+    ):
         return False
     try:
         executed_at = dt.datetime.fromisoformat(str(portal["executed_at"]).replace("Z", "+00:00"))
@@ -153,6 +203,92 @@ def _portal_audit_is_current(portal: dict[str, Any]) -> bool:
     return -(skew_minutes / 60) <= age_hours <= float(
         portal.get("max_age_hours") or _portal_max_age_hours()
     )
+
+
+def _database_snapshot_is_current(prepared: dict[str, Any]) -> bool:
+    raw = str(prepared.get("database_as_of") or "")
+    if not raw:
+        return False
+    try:
+        watermark = dt.datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        max_age = float(os.environ.get("WHO_MCP_DATABASE_MAX_AGE_HOURS", "168"))
+    except ValueError:
+        return False
+    if watermark.tzinfo is None or max_age <= 0:
+        return False
+    age = (dt.datetime.now().astimezone() - watermark.astimezone()).total_seconds() / 3600
+    live = prepared.get("live_registry_audit") or {}
+    expected = len(prepared.get("all_verified_trials") or [])
+    attempted = int(live.get("attempted") or 0)
+    errors = int(live.get("errors") or 0)
+    unknown = int(live.get("unknown") or 0)
+    try:
+        max_error_rate = float(os.environ.get("LIVE_REGISTRY_MAX_ERROR_RATE", "0.25"))
+    except ValueError:
+        return False
+    if not 0 <= max_error_rate <= 1:
+        return False
+    error_rate = (errors + unknown) / attempted if attempted else 1.0
+    return (
+        -1 <= age <= max_age
+        and live.get("complete") is True
+        and attempted == expected
+        and error_rate <= max_error_rate
+    )
+
+
+def data_freshness_assessment(prepared: dict[str, Any]) -> dict[str, Any]:
+    portal_current = _portal_audit_is_current(prepared.get("portal_delta") or {})
+    snapshot_current = _database_snapshot_is_current(prepared)
+    live = prepared.get("live_registry_audit") or {}
+    expected = len(prepared.get("all_verified_trials") or [])
+    attempted = int(live.get("attempted") or 0)
+    errors = int(live.get("errors") or 0)
+    unknown = int(live.get("unknown") or 0)
+    try:
+        max_error_rate = float(os.environ.get("LIVE_REGISTRY_MAX_ERROR_RATE", "0.25"))
+    except ValueError:
+        max_error_rate = -1
+    error_rate = (errors + unknown) / attempted if attempted else 1.0
+    live_complete = bool(
+        live.get("complete")
+        and attempted == expected
+        and 0 <= max_error_rate <= 1
+        and error_rate <= max_error_rate
+    )
+    if portal_current and live_complete:
+        level = "A"
+        rationale = (
+            "Current WHO portal delta was merged and every recalled trial received "
+            "a direct-registry verification attempt."
+        )
+    elif snapshot_current and live_complete:
+        level = "B"
+        rationale = (
+            "MCP database is within the configured age and every recalled trial "
+            "received a direct-registry verification attempt."
+        )
+    else:
+        level = "C"
+        missing = []
+        if not (portal_current or snapshot_current):
+            missing.append("current portal delta or database snapshot")
+        if not live_complete:
+            missing.append(
+                f"complete direct-registry audit ({int(live.get('attempted') or 0)}/{expected})"
+            )
+        rationale = "Data freshness is insufficient: missing " + " and ".join(missing) + "."
+    return {
+        "level": level,
+        "formal_freshness_ready": live_complete and (portal_current or snapshot_current),
+        "portal_delta_current": portal_current,
+        "database_snapshot_current": snapshot_current,
+        "live_registry_complete": live_complete,
+        "live_registry_error_rate": error_rate,
+        "live_registry_max_error_rate": max_error_rate,
+        "live_registry_audit": live,
+        "rationale": rationale,
+    }
 
 def _trial_ids(trials: list[dict[str, Any]]) -> set[str]:
     return {str(trial.get("id") or "").strip() for trial in trials if str(trial.get("id") or "").strip()}
@@ -223,6 +359,14 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _json_sha256(value: Any) -> str:
+    return hashlib.sha256(
+        json.dumps(
+            value, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+        ).encode("utf-8")
+    ).hexdigest()
+
+
 def report_quality_gates(
     prepared: dict[str, Any],
     analyzed_count: int,
@@ -240,8 +384,14 @@ def report_quality_gates(
     )
     prefilter_audit = prepared.get("preanalysis_filter") or {}
     no_budget_omissions = int(prefilter_audit.get("budget_omitted_count") or 0) == 0
+    recall_ids = _trial_ids(prepared.get("all_verified_trials") or [])
+    valid_recall = bool(recall_ids) and len(recall_ids) == len(
+        prepared.get("all_verified_trials") or []
+    )
     return {
         "complete_analysis": (
+            valid_recall
+            and
             scope in {"complete", "complete_recall", "prefilter_complete", "staged_complete"}
             and analyzed_count == expected
             and no_budget_omissions
@@ -256,7 +406,7 @@ def report_quality_gates(
         "complete_retrieval": bool(prepared.get(
             "retrieval_complete", not (prepared.get("search_stats") or {}).get("query_truncation_count")
         )),
-        "current_portal_delta": _portal_audit_is_current(prepared.get("portal_delta") or {}),
+        "current_data_snapshot": data_freshness_assessment(prepared)["formal_freshness_ready"],
     }
 
 def select_analysis_candidates(trials: list[dict[str, Any]], limit: int) -> list[dict[str, Any]]:
@@ -289,18 +439,21 @@ def deterministic_prefilter(
         if str(trial.get("overall_status") or "").strip().upper().replace(" ", "_")
         in ACTIVE_ANALYSIS_STATUSES
     ]
-    eligible = active or list(trials)
+    # Recruitment disposition is handled by direct-registry verification and
+    # explicit hard exclusions. A workload selector must not silently remove
+    # records from the formal disposition equation.
+    eligible = list(trials)
     selected = select_analysis_candidates(eligible, limit)
     audit = {
         "version": "deterministic-prefilter-v1",
         "input_recall_count": len(trials),
         "active_status_count": len(active),
-        "inactive_or_unknown_omitted_count": len(trials) - len(active),
+        "inactive_or_unknown_omitted_count": 0,
         "prefilter_limit": limit,
         "budget_omitted_count": len(eligible) - len(selected),
         "selected_count": len(selected),
         "selection_basis": [
-            "active enrollment status", "search rank", "matched search-branch count",
+            "search rank", "matched search-branch count",
             "operational feasibility", "mechanism diversity",
         ],
         "clinical_eligibility_applied": False,
@@ -309,16 +462,18 @@ def deterministic_prefilter(
 
 
 def prepare(
-    *, patient_path: Path, plan_path: Path, out_dir: Path,
+    *, patient_path: Path, plan_path: Path | None, out_dir: Path,
     database: Path | None = None, server_python: str = "", server_script: Path | None = None,
     mcp_transport: str = "stdio", mcp_url: str = "", mcp_api_key: str = "",
     max_per_query: int = 5000, total_limit: int = 20000,
     prefilter_limit: int = 0, analysis_limit: int = 0, batch_size: int = 5,
     portal_delta_path: Path | None = None,
+    portal_delta_mode: str = "off", live_registry_verification: bool = False,
 ) -> dict[str, Any]:
-    patient = load_json(patient_path)
-    plan = load_json(plan_path)
+    patient, patient_input_audit = load_patient_input(patient_path)
+    plan = load_json(plan_path) if plan_path else build_baseline_search_plan(patient)
     errors = validate_search_plan(plan, require_full_coverage=True)
+    errors.extend(validate_search_plan_for_patient(plan, patient))
     if errors:
         raise ValueError("Invalid full search plan: " + "; ".join(errors))
     transport = mcp_transport.strip().casefold()
@@ -350,22 +505,108 @@ def prepare(
     if stats.get("global_truncated"):
         raise RuntimeError(f"MCP search globally truncated: {stats}")
     database_as_of = mcp_payload["metadata"].get("database_as_of") or ""
-    portal_trials, portal_audit = _load_portal_delta(portal_delta_path, database_as_of)
+    if portal_delta_path is not None and portal_delta_mode == "auto":
+        portal_delta_mode = "file"
+    if portal_delta_mode == "auto":
+        generated = build_delta(database_as_of=database_as_of, plan=plan)
+        out_dir.mkdir(parents=True, exist_ok=True)
+        (out_dir / "portal_delta.json").write_text(
+            json.dumps(generated, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+        portal_trials = generated["trials"]
+        portal_audit = {
+            **generated,
+            "returned": len(portal_trials),
+            "freshness_validated_at_prepare": True,
+            "max_age_hours": _portal_max_age_hours(),
+            "clock_skew_tolerance_minutes": _portal_clock_skew_minutes(),
+        }
+        portal_audit.pop("trials", None)
+    elif portal_delta_mode == "file" or portal_delta_path:
+        portal_trials, portal_audit = _load_portal_delta(
+            portal_delta_path, database_as_of, _json_sha256(plan)
+        )
+    elif portal_delta_mode == "off":
+        portal_trials, portal_audit = _load_portal_delta(None, database_as_of)
+    else:
+        raise ValueError("portal_delta_mode must be auto, file, or off")
     merged = merge_sources(
         search.get("results") or [], portal_trials, patient=patient, database_as_of=database_as_of,
     )
     verified = verify_batch(merged, mcp_payload.get("details") or [], patient)
+    duplicate_clusters = {
+        tuple(trial.get("possible_duplicate_cluster_ids") or [])
+        for trial in verified
+        if trial.get("possible_duplicate_cluster_ids")
+    }
+    deduplication_audit = {
+        "input_count": len(merged),
+        "output_count": len(verified),
+        "authoritative_id_merges": len(merged) - len(verified),
+        "possible_duplicate_cluster_count": len(duplicate_clusters),
+        "possible_duplicate_clusters": [
+            list(cluster) for cluster in sorted(duplicate_clusters)
+        ],
+        "policy": (
+            "Automatic merges require an authoritative registry-ID bridge. "
+            "Title/intervention lookalikes remain separate and are flagged for review."
+        ),
+    }
+    for trial in verified:
+        trial["resolved_source_url"] = resolved_trial_url(trial)
+    if live_registry_verification:
+        live = verify_and_partition(
+            verified,
+            workers=int(os.environ.get("LIVE_REGISTRY_CONCURRENCY", "8")),
+            timeout=float(os.environ.get("LIVE_REGISTRY_TIMEOUT_SECONDS", "20")),
+        )
+        verified = live["active_or_unknown"] + live["inactive"]
+        live_inactive_ids = {
+            str(trial.get("id") or "") for trial in live["inactive"]
+        }
+        live_audit = live["audit"]
+    else:
+        live_inactive_ids = set()
+        live_audit = {
+            "attempted": 0, "active": 0, "inactive": 0, "unknown": 0,
+            "errors": 0, "complete": False, "policy": "Not executed",
+        }
     for trial in verified:
         trial["feasibility"] = compute_feasibility(trial, patient).__dict__
         trial["mechanism_category"] = classify_mechanism(trial, patient=patient)
         trial["country_assessment"] = assess_country_evidence(trial, patient)
         trial["resolved_source_url"] = resolved_trial_url(trial)
     triage = apply_generic_hard_rules(patient, verified)
-    hard_excluded = triage["hard_exclude"]
-    gater_pool = triage["pass_to_gater"]
+    registry_inactive = []
+    generic_hard_excluded = []
+    for trial in triage["hard_exclude"]:
+        generic_hard_excluded.append(trial)
+    gater_pool = []
+    for trial in triage["pass_to_gater"]:
+        if str(trial.get("id") or "") in live_inactive_ids:
+            trial["hard_excluded"] = True
+            trial["exclude_reason"] = "Direct registry explicitly reports a non-enrolling status."
+            trial["registry_status_rule"] = {
+                "rule_id": "REGISTRY-INACTIVE",
+                "source": trial.get("live_registry_verification"),
+            }
+            registry_inactive.append(trial)
+        else:
+            gater_pool.append(trial)
+    hard_excluded = generic_hard_excluded + registry_inactive
     prefiltered, prefilter_audit = deterministic_prefilter(gater_pool, prefilter_limit)
     candidates = select_analysis_candidates(prefiltered, analysis_limit)
-    retrieval_complete = not stats.get("global_truncated") and not stats.get("query_truncation_count")
+    query_audit = search.get("query_audit") or []
+    retrieval_complete = bool(query_audit) and not stats.get("global_truncated") and not (
+        stats.get("query_truncation_count")
+        or any(
+            item.get("truncated") is True
+            or item.get("has_more") is True
+            or item.get("complete") is False
+            for item in query_audit
+            if isinstance(item, dict)
+        )
+    )
     no_budget_omissions = len(candidates) == len(gater_pool)
     analysis_scope = "staged_complete" if no_budget_omissions else "validation_subset"
     jobs = build_analysis_jobs(patient, candidates, SKILLS_ROOT, batch_size=batch_size)
@@ -375,12 +616,20 @@ def prepare(
         "transport": mcp_payload["transport"],
         "server_tools": mcp_payload["server_tools"],
         "patient": patient,
+        "patient_input_audit": patient_input_audit,
         "search_plan": plan,
+        "executed_search_plan": mcp_payload.get("executed_search_plan") or plan,
+        "search_plan_audit": plan.get("generation_audit") or {
+            "mode": "provided",
+            "requires_human_review": False,
+        },
         "database_metadata": mcp_payload["metadata"],
         "database_as_of": mcp_payload["metadata"].get("database_as_of"),
         "search_stats": stats,
-        "query_audit": search.get("query_audit") or [],
+        "query_audit": query_audit,
+        "deduplication_audit": deduplication_audit,
         "portal_delta": portal_audit,
+        "live_registry_audit": live_audit,
         "all_verified_trials": verified,
         "analysis_workflow": "gater_then_deep_analysis",
         "hard_rule_triage": {
@@ -388,6 +637,7 @@ def prepare(
             "input_count": len(verified),
             "hard_excluded_count": len(hard_excluded),
             "pass_to_gater_count": len(gater_pool),
+            "registry_inactive_count": len(registry_inactive),
             "audit": triage["audit"],
         },
         "hard_excluded_trials": hard_excluded,
@@ -398,12 +648,20 @@ def prepare(
         "analysis_limit": analysis_limit,
         "analysis_scope": analysis_scope,
         "retrieval_complete": retrieval_complete,
+        "data_freshness": {},
         "formal_report_ready": False,
         "guardrail": "Run canonical LLM subskills and finalize with a validated analysis bundle.",
     }
+    payload["data_freshness"] = data_freshness_assessment(payload)
     out_dir.mkdir(parents=True, exist_ok=True)
-    (out_dir / "prepared.json").write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-    (out_dir / "analysis_jobs.json").write_text(json.dumps(jobs, ensure_ascii=False, indent=2), encoding="utf-8")
+    normalized_patient_path = out_dir / "normalized-patient.json"
+    write_json_atomic(normalized_patient_path, patient)
+    normalized_plan_path = out_dir / "normalized-search-plan.json"
+    write_json_atomic(normalized_plan_path, plan)
+    payload["normalized_patient_path"] = str(normalized_patient_path.resolve())
+    payload["normalized_search_plan_path"] = str(normalized_plan_path.resolve())
+    write_json_atomic(out_dir / "prepared.json", payload)
+    write_json_atomic(out_dir / "analysis_jobs.json", jobs)
     return payload
 
 
@@ -437,6 +695,8 @@ def finalize(*, prepared_path: Path, analysis_path: Path, out_dir: Path) -> dict
         trial = dict(source)
         hard = trial.get("generic_hard_rules") or {}
         reasons = [str(item.get("reason") or item.get("rule_id") or "") for item in hard.get("triggered_rules") or []]
+        if trial.get("exclude_reason"):
+            reasons.append(str(trial["exclude_reason"]))
         trial["gating"] = {
             "verdict": "exclude", "confidence": 1.0, "satisfied": [], "pending": [],
             "exclusion_reasons": reasons,
@@ -503,6 +763,8 @@ def finalize(*, prepared_path: Path, analysis_path: Path, out_dir: Path) -> dict
         "database_metadata": prepared["database_metadata"],
         "database_as_of": prepared["database_as_of"],
         "portal_delta": prepared["portal_delta"],
+        "live_registry_audit": prepared.get("live_registry_audit") or {},
+        "data_freshness": data_freshness_assessment(prepared),
         "search_stats": prepared["search_stats"],
         "query_audit": prepared["query_audit"],
         "recall_count": len(prepared["all_verified_trials"]),
@@ -518,13 +780,15 @@ def finalize(*, prepared_path: Path, analysis_path: Path, out_dir: Path) -> dict
         "generated_at": dt.datetime.now().astimezone().isoformat(timespec="seconds"),
     }
     out_dir.mkdir(parents=True, exist_ok=True)
-    (out_dir / "pipeline.json").write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    write_json_atomic(out_dir / "pipeline.json", payload)
     (out_dir / "run-manifest.json").write_text(
         json.dumps(run_manifest, ensure_ascii=False, indent=2), encoding="utf-8"
     )
     if formal_ready:
+        (out_dir / "validation-report.html").unlink(missing_ok=True)
         render_html(payload, out_dir / "report.html")
     else:
+        (out_dir / "report.html").unlink(missing_ok=True)
         render_validation_html(payload, out_dir / "validation-report.html")
     return payload
 
@@ -534,7 +798,10 @@ def main() -> None:
     sub = parser.add_subparsers(dest="command", required=True)
     prepare_parser = sub.add_parser("prepare")
     prepare_parser.add_argument("--patient", required=True)
-    prepare_parser.add_argument("--plan", required=True)
+    prepare_parser.add_argument(
+        "--plan",
+        help="Eight-dimensional plan JSON; omit for deterministic baseline generation.",
+    )
     prepare_parser.add_argument(
         "--mcp-transport", choices=("stdio", "streamable-http"),
         default=os.environ.get("WHO_MCP_TRANSPORT", "stdio"),
@@ -568,7 +835,8 @@ def main() -> None:
         if args.mcp_transport == "streamable-http" and not (args.mcp_url and mcp_api_key):
             prepare_parser.error("streamable-http requires WHO_MCP_URL/--mcp-url and WHO_MCP_API_KEY")
         result = prepare(
-            patient_path=Path(args.patient), plan_path=Path(args.plan),
+            patient_path=Path(args.patient),
+            plan_path=Path(args.plan) if args.plan else None,
             database=Path(args.db) if args.db else None,
             server_python=args.mcp_python or "", server_script=Path(args.mcp_server) if args.mcp_server else None,
             mcp_transport=args.mcp_transport, mcp_url=args.mcp_url or "", mcp_api_key=mcp_api_key,

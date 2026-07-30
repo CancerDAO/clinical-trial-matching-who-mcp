@@ -25,7 +25,7 @@ if median_os_at_line <= threshold:
     trigger("Line + median OS")
 ```
 
-For SYNTHETIC-CRC-LATER-LINE (CRC, treatment_lines_completed=2, current_therapy_ongoing=true):
+For a synthetic later-line CRC case (treatment_lines_completed=2, current_therapy_ongoing=true):
 - effective_line = 3
 - CRC `3_plus` median OS per ontology = 6 months
 - threshold = 6
@@ -60,7 +60,7 @@ if serious_comorbidities >= 3 OR any single life-limiting comorbidity (e.g. ESRD
     trigger("Cumulative comorbidity burden constrains regimen tolerability")
 ```
 
-For SYNTHETIC-CRC-LATER-LINE: three or more serious cardiac, renal, hepatic, or neurologic comorbidities → trigger ✅
+For the synthetic later-line CRC case: three or more serious cardiac, renal, hepatic, or neurologic comorbidities → trigger ✅
 
 ### Trigger 5 — All-Phase-1 trial landscape
 
@@ -79,7 +79,7 @@ When triggered, emit a `discussion_recommendation` paragraph that:
 4. Mentions trial logistics burden (cross-city travel, manufacture window for cell therapy, screening visits)
 5. Avoids "推荐" / "should pursue" / "best option" language — uses "可选项" / "需讨论" / "权衡"
 
-Example output for SYNTHETIC-CRC-LATER-LINE:
+Example output for the synthetic later-line CRC case:
 
 ```
 At L4 mCRC, median OS per published data is approximately 6 months (CRC ontology, sourced from CORRECT/RECOURSE/SUNLIGHT pivotal trials). Patient has multiple serious comorbidities that may further constrain tolerance for cytotoxic regimens.

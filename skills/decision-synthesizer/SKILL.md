@@ -7,6 +7,13 @@ description: Use when synthesizing per-trial gating + risk + efficacy outputs in
 
 You produce the final `decision_report.json` that drives the patient-facing HTML report. You read the aggregated per-trial analysis (gating + risk + efficacy) plus the patient profile, and emit a structured report with Top-N decision paths, Goals-of-Care section (when triggered), and patient consistency flags.
 
+The executor is authoritative for eligibility verdicts, efficacy snapshots, risks,
+blockers, and publication identity. Do not alter those fields. A `conditional`
+trial is a verification path, not a treatment recommendation. Do not describe
+cross-trial comparisons as superiority unless the supplied evidence is a direct
+head-to-head comparison. Do not invent screening dates, first-dose dates, site
+slots, travel time, or manufacturing time.
+
 ## The bugs this subskill exists to fix
 
 v1.7.x had three Python modules that all had quality issues:
@@ -27,9 +34,10 @@ v1.7.x had three Python modules that all had quality issues:
       "phases": [...],
       "sponsor": "...",
       "interventions": [...],
-      "china_sites": [...],
-      "feasibility_score": 0.961,
-      "feasibility_dims": {...},
+      "patient_country_sites": [...],
+      "patient_country_site_count": 0,
+      "country_assessment": {...},
+      "feasibility": {"composite": 0.961, "sub_scores": {...}},
       "gating": { ...trial-gater output },
       "risks": [ ...trial-risk-annotator output ],
       "efficacy_context": { ...trial-efficacy-contextualizer output }
@@ -80,9 +88,9 @@ v1.7.x had three Python modules that all had quality issues:
       "trial_title": "...",
       "sponsor": "...",
       "phase": "PHASE2",
-      "china_sites_count": 11,
-      "feasibility_score": 0.961,
-      "feasibility_dims": {...},
+      "patient_country_site_count": 11,
+      "country_assessment": {...},
+      "feasibility": {"composite": 0.961, "sub_scores": {...}},
       "rationale": "string",
       "efficacy_snapshot": {...from contextualizer},
       "vs_soc": {...from contextualizer},
@@ -94,8 +102,8 @@ v1.7.x had three Python modules that all had quality issues:
       ],
       "consequences_of_skipping": "string — what happens if patient doesn't pursue this path",
       "estimated_timeline": {
-        "screening_window": "2026-05-07 to 2026-05-21",
-        "earliest_first_dose": "2026-05-28",
+        "screening_window": null,
+        "earliest_first_dose": null,
         "critical_path_steps": ["string", ...]
       }
     }
@@ -164,7 +172,7 @@ Step 4a — Filter
   - Keep verdict=match and verdict=conditional
 
 Step 4b — Sort by composite score
-  composite = 0.5 * feasibility_score + 0.3 * (1 - confidence_penalty) + 0.2 * evidence_tier_weight
+  composite = 0.5 * feasibility.composite + 0.3 * (1 - confidence_penalty) + 0.2 * evidence_tier_weight
   where evidence_tier_weight: trial_specific=1.0, mutation_class=0.7, drug_class=0.5, no_data=0.2
 
 Step 4c — Diversity bucketing (avoid 3 same-mechanism paths)
@@ -185,7 +193,7 @@ Step 4d — Per-path narrative
   - blockers_satisfied / blockers_pending (from gater)
   - alternatives_comparison: 1-2 similar trials with reason for non-selection
   - consequences_of_skipping: 1-2 sentence narrative
-  - estimated_timeline
+  - critical screening steps only; dates remain null until a site confirms them
 ```
 
 ### Step 5 — SoC benchmarks (cross-cutting, not per-path)

@@ -107,11 +107,7 @@ def evaluate_generic_hard_rules(patient: Mapping[str, Any], trial: Mapping[str, 
 
     patient_ecog, patient_ecog_key = _first(patient, "ecog", "ecog_performance_status")
     ecog = _number(patient_ecog)
-    min_ecog, _ = _first(eligibility, "minimum_ecog", "min_ecog", "ecog_min")
     max_ecog, _ = _first(eligibility, "maximum_ecog", "max_ecog", "ecog_max")
-    if ecog is not None and _number(min_ecog) is not None and ecog < _number(min_ecog):
-        triggered.append(_trigger("GHR-ECOG-MIN", patient_ecog_key or "ecog", patient_ecog, min_ecog,
-                                  "Patient ECOG is explicitly below the trial's structured range."))
     if ecog is not None and _number(max_ecog) is not None and ecog > _number(max_ecog):
         triggered.append(_trigger("GHR-ECOG-MAX", patient_ecog_key or "ecog", patient_ecog, max_ecog,
                                   "Patient ECOG is explicitly above the trial's structured range."))

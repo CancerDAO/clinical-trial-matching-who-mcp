@@ -26,10 +26,33 @@ def _phases(value: Any) -> list[str]:
     return [str(item).strip().upper().replace(" ", "_") for item in values if str(item).strip()]
 
 
+_STANDARD_REGISTRY_ID = re.compile(
+    r"^(?:NCT\d{8}|CHICTR[\w-]+|CTIS20\d{2}-\d{6}-\d{2}(?:-00)?|"
+    r"ACTRN\d+|ISRCTN\d+|DRKS\d+|JPRN-[\w-]+|UMIN\d+|KCT\d+|"
+    r"TCTR\d+|IRCT[\w-]+|PACTR[\w-]+|NL-[\w-]+|CTRI/[\w/-]+|"
+    r"EUCTR[\w-]+|U1111-\d{4}-\d{4})$",
+    re.I,
+)
+
+
 def _ids(trial: dict[str, Any]) -> list[str]:
-    values = [trial.get("trial_uid"), trial.get("primary_registry_id"), trial.get("id"), trial.get("trial_id")]
+    values = [
+        trial.get("trial_uid"), trial.get("primary_registry_id"),
+        trial.get("id"), trial.get("trial_id"),
+    ]
     for item in trial.get("registry_ids") or []:
-        values.append(item.get("registry_id") if isinstance(item, dict) else item)
+        value = item.get("registry_id") if isinstance(item, dict) else item
+        is_primary = (
+            isinstance(item, dict)
+            and (
+                item.get("is_primary") in {1, True, "1", "true"}
+                or str(item.get("id_type") or "").casefold() in {"main_id", "primary"}
+            )
+        )
+        if is_primary or _STANDARD_REGISTRY_ID.fullmatch(
+            re.sub(r"\s+", "", str(value or ""))
+        ):
+            values.append(value)
     output: list[str] = []
     for value in values:
         key = re.sub(r"\s+", "", str(value or "")).upper()
@@ -39,8 +62,6 @@ def _ids(trial: dict[str, Any]) -> list[str]:
         eu = re.sub(r"^CTIS", "", key)
         if re.fullmatch(r"20\d{2}-\d{6}-\d{2}(?:-00)?", eu):
             output.append("CTIS_CORE:" + re.sub(r"-00$", "", eu))
-        for protocol in re.findall(r"\d{6,}[A-Z]{2,}\d+", key):
-            output.append("PROTOCOL_CORE:" + protocol)
     return list(dict.fromkeys(output))
 
 def _detail_rows(details: list[dict[str, Any]] | dict[str, Any]) -> list[dict[str, Any]]:
@@ -176,19 +197,77 @@ def _merge_duplicate(existing: dict[str, Any], trial: dict[str, Any]) -> None:
 
 
 def deduplicate_verified_trials(trials: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Merge records connected by explicit registry IDs, including bridge records."""
+    parents = list(range(len(trials)))
+
+    def find(index: int) -> int:
+        while parents[index] != index:
+            parents[index] = parents[parents[index]]
+            index = parents[index]
+        return index
+
+    def union(left: int, right: int) -> None:
+        left_root, right_root = find(left), find(right)
+        if left_root != right_root:
+            parents[right_root] = left_root
+
+    id_owner: dict[str, int] = {}
+    for index, trial in enumerate(trials):
+        for value in _ids(trial):
+            if value in id_owner:
+                union(index, id_owner[value])
+            else:
+                id_owner[value] = index
+
+    groups: dict[int, list[int]] = {}
+    for index in range(len(trials)):
+        groups.setdefault(find(index), []).append(index)
     deduped: list[dict[str, Any]] = []
-    id_to_index: dict[str, int] = {}
-    for trial in trials:
-        ids = _ids(trial)
-        index = next((id_to_index[value] for value in ids if value in id_to_index), None)
-        if index is None:
-            index = len(deduped)
-            deduped.append(trial)
-        else:
-            _merge_duplicate(deduped[index], trial)
-        for value in _ids(deduped[index]):
-            id_to_index[value] = index
+    for indices in sorted(groups.values(), key=min):
+        existing = trials[indices[0]]
+        for index in indices[1:]:
+            _merge_duplicate(existing, trials[index])
+        deduped.append(existing)
+    _annotate_possible_duplicates(deduped)
     return deduped
+
+
+def _normalized_duplicate_text(value: Any) -> str:
+    return re.sub(r"[^a-z0-9]+", " ", str(value or "").casefold()).strip()
+
+
+def _annotate_possible_duplicates(trials: list[dict[str, Any]]) -> None:
+    """Flag title/intervention lookalikes without merging independent protocols."""
+    clusters: dict[tuple[str, tuple[str, ...]], list[dict[str, Any]]] = {}
+    for trial in trials:
+        title = _normalized_duplicate_text(
+            trial.get("scientific_title") or trial.get("title")
+        )
+        interventions = tuple(sorted(
+            value for value in (
+                _normalized_duplicate_text(item) for item in trial.get("interventions") or []
+            ) if value
+        ))
+        if len(title) >= 40 and interventions:
+            clusters.setdefault((title, interventions), []).append(trial)
+    for cluster in clusters.values():
+        if len(cluster) < 2:
+            continue
+        ids = [str(trial.get("id") or "") for trial in cluster]
+        for trial in cluster:
+            trial["possible_duplicate_records"] = [
+                {
+                    "trial_id": other.get("id"),
+                    "primary_registry_id": other.get("primary_registry_id"),
+                    "sponsor": other.get("sponsor"),
+                    "reason": (
+                        "Identical normalized scientific title and interventions; "
+                        "kept separate because no authoritative registry-ID bridge exists."
+                    ),
+                }
+                for other in cluster if other is not trial
+            ]
+            trial["possible_duplicate_cluster_ids"] = ids
 
 
 def verify_batch(trials: list[dict[str, Any]], details: list[dict[str, Any]] | dict[str, Any], patient: dict[str, Any]) -> list[dict[str, Any]]:

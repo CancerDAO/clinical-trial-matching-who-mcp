@@ -13,12 +13,87 @@ for relative in ("scripts/retrieval", "scripts/verification", "scripts/scoring",
 from feasibility import WEIGHTS, compute_feasibility
 from html_renderer import render_html
 from mechanism_categories import classify_mechanism
-from search_plan import search_plan_coverage, validate_search_plan
+from search_plan import (
+    build_baseline_search_plan, compile_search_plan_for_mcp,
+    search_plan_coverage, validate_search_plan,
+    validate_search_plan_for_patient,
+)
 from who_mcp_adapter import build_mcp_requests, build_portal_delta_contract, merge_sources
 from who_mcp_verifier import verify_batch
 
 
 class WhoMcpPipelineTests(unittest.TestCase):
+    def test_baseline_plan_covers_all_eight_dimensions(self):
+        plan = build_baseline_search_plan({
+            "patient_id": "PT-1", "cancer_type": "pancreatic cancer",
+            "stage": "IV", "mutations": ["KRAS G12D"],
+            "search_terms": {
+                "named_agents": ["ASP3082"],
+                "combination_targets": ["SHP2"],
+                "pathway_terms": ["RAS(ON)"],
+                "chinese_terms": ["胰腺癌 KRAS G12D"],
+            },
+        })
+        self.assertEqual(validate_search_plan(plan), [])
+        self.assertEqual(search_plan_coverage(plan)["missing"], [])
+        self.assertFalse(plan["generation_audit"]["requires_human_review"])
+
+    def test_baseline_registry_branch_never_uses_a_disease_only_query(self):
+        patient = {
+            "patient_id": "PT-1",
+            "cancer_type": "pancreatic ductal adenocarcinoma",
+            "mutations": ["KRAS G12D"],
+        }
+        plan = build_baseline_search_plan(patient)
+        registry_group = next(
+            group for group in plan["keyword_groups"]
+            if group["dimension"] == "chinese_registry_terms"
+        )
+        self.assertNotIn(
+            patient["cancer_type"],
+            [query.get("term") for query in registry_group["queries"]],
+        )
+
+    def test_mcp_plan_compiler_joins_disease_and_concept_anchors(self):
+        plan = {
+            "keyword_groups": [{
+                "dimension": "disease_biomarker",
+                "label": "Disease and marker",
+                "queries": [{
+                    "condition": "pancreatic ductal adenocarcinoma",
+                    "term": "KRAS G12D",
+                }],
+            }],
+        }
+        compiled = compile_search_plan_for_mcp(plan)
+        query = compiled["keyword_groups"][0]["queries"][0]
+        self.assertIsNone(query["condition"])
+        self.assertEqual(
+            query["term"],
+            "pancreatic ductal adenocarcinoma KRAS G12D",
+        )
+        self.assertEqual(query["query_semantics"], "compiled_conjunctive_anchor")
+        self.assertEqual(plan["keyword_groups"][0]["queries"][0]["term"], "KRAS G12D")
+
+    def test_formal_plan_rejects_condition_or_patient_disease_only_queries(self):
+        condition_only = {
+            "keyword_groups": [{
+                "dimension": "disease_biomarker",
+                "label": "Disease only",
+                "queries": [{"condition": "gastric cancer", "term": ""}],
+            }],
+        }
+        self.assertTrue(validate_search_plan(condition_only, require_full_coverage=False))
+        disease_term = {
+            "keyword_groups": [{
+                "dimension": "disease_biomarker",
+                "label": "Disease only",
+                "queries": [{"condition": None, "term": "gastric cancer"}],
+            }],
+        }
+        self.assertTrue(validate_search_plan_for_patient(
+            disease_term, {"cancer_type": "gastric cancer"}
+        ))
     def setUp(self):
         self.patient = {
             "patient_id": "P-001", "country": "China", "city": "Beijing",
@@ -58,7 +133,11 @@ class WhoMcpPipelineTests(unittest.TestCase):
     def test_request_preserves_full_plan_and_global_recall(self):
         self.assertEqual(validate_search_plan(self.plan, require_full_coverage=False), [])
         request = build_mcp_requests(self.plan, self.patient)
-        self.assertEqual(request["local_search"]["arguments"]["search_plan"], self.plan)
+        executed = request["local_search"]["arguments"]["search_plan"]
+        self.assertEqual(
+            executed["execution_audit"]["compiler"],
+            "conjunctive-search-plan-v1",
+        )
         self.assertEqual(request["local_search"]["arguments"]["country"], "")
         self.assertEqual(request["metadata"]["tool"], "database_metadata")
 
@@ -116,20 +195,53 @@ class WhoMcpPipelineTests(unittest.TestCase):
 
     def test_post_detail_dedup_uses_exact_record_then_secondary_ids(self):
         trials = [
-            {"trial_uid": "who:CHI", "id": "CHI", "primary_registry_id": "CHI", "matched_by": ["a"]},
-            {"trial_uid": "who:ITM", "id": "ITM", "primary_registry_id": "ITM", "matched_by": ["b"]},
+            {"trial_uid": "who:NCT", "id": "NCT00000001", "primary_registry_id": "NCT00000001", "matched_by": ["a"]},
+            {"trial_uid": "who:CHI", "id": "ChiCTR2400000001", "primary_registry_id": "ChiCTR2400000001", "matched_by": ["b"]},
         ]
         details = [
-            {"found": True, "trial_uid": "who:CHI", "primary_registry_id": "CHI", "title": "Same",
-             "registry_ids": [{"registry_id": "CHI"}, {"registry_id": "ITM"}], "sites": [], "parsed_criteria": {"raw": "x"}},
-            {"found": True, "trial_uid": "who:ITM", "primary_registry_id": "ITM", "title": "Same",
-             "registry_ids": [{"registry_id": "ITM"}, {"registry_id": "CHI"}], "sites": [], "parsed_criteria": {"raw": "x"}},
+            {"found": True, "trial_uid": "who:NCT", "primary_registry_id": "NCT00000001", "title": "Same",
+             "registry_ids": [{"registry_id": "NCT00000001"}, {"registry_id": "ChiCTR2400000001"}], "sites": [], "parsed_criteria": {"raw": "x"}},
+            {"found": True, "trial_uid": "who:CHI", "primary_registry_id": "ChiCTR2400000001", "title": "Same",
+             "registry_ids": [{"registry_id": "ChiCTR2400000001"}, {"registry_id": "NCT00000001"}], "sites": [], "parsed_criteria": {"raw": "x"}},
         ]
         verified = verify_batch(trials, details, self.patient)
         self.assertEqual(len(verified), 1)
-        self.assertEqual(verified[0]["id"], "CHI")
+        self.assertEqual(verified[0]["id"], "NCT00000001")
         self.assertEqual(set(verified[0]["matched_by"]), {"a", "b"})
         self.assertEqual(len(verified[0]["duplicate_registry_records"]), 1)
+
+    def test_generic_secondary_protocol_collision_does_not_merge_trials(self):
+        trials = [
+            {
+                "id": "NCT00000001",
+                "primary_registry_id": "NCT00000001",
+                "registry_ids": [{"registry_id": "123456AB1", "id_type": "secondary_id"}],
+            },
+            {
+                "id": "NCT00000002",
+                "primary_registry_id": "NCT00000002",
+                "registry_ids": [{"registry_id": "123456AB1", "id_type": "secondary_id"}],
+            },
+        ]
+        self.assertEqual(len(verify_batch(trials, [], self.patient)), 2)
+
+    def test_identical_title_and_interventions_are_flagged_not_merged(self):
+        shared = {
+            "scientific_title": (
+                "A sufficiently long identical scientific title for two independent protocols"
+            ),
+            "interventions": ["Drug A", "Drug B"],
+        }
+        trials = [
+            {"id": "NCT00000001", **shared},
+            {"id": "NCT00000002", **shared},
+        ]
+        verified = verify_batch(trials, [], self.patient)
+        self.assertEqual(len(verified), 2)
+        self.assertEqual(
+            verified[0]["possible_duplicate_cluster_ids"],
+            ["NCT00000001", "NCT00000002"],
+        )
     def test_feasibility_is_relative_to_patient_country(self):
         trial = verify_batch(self.local, self.detail, self.patient)[0]
         china = compute_feasibility(trial, self.patient)

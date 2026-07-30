@@ -1,6 +1,7 @@
 {
   "synthetic": true,
   "patient_id": "SYNTHETIC-CN-CRC-KRAS-G12C",
+  "age": 58,
   "country": "China",
   "city": "Shanghai",
   "patient_location": "Shanghai, China",
@@ -39,6 +40,10 @@
     }
   ],
   "ecog": 1,
+  "kps": 80,
+  "comorbidities": [
+    "controlled hypertension"
+  ],
   "organ_function": "adequate",
   "willing_to_travel_domestic": true,
   "willing_to_travel_internationally": false,

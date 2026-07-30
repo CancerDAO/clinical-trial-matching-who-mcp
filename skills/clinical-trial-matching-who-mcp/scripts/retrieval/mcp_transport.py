@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from typing import Any, Callable, Protocol
 
+from search_plan import compile_search_plan_for_mcp
 
 class McpClientError(RuntimeError):
     """An identifiable MCP transport or protocol failure."""
@@ -52,12 +53,25 @@ def execute_who_workflow(
         raise McpClientError(f"WHO MCP server missing tools: {missing}")
 
     metadata = client.call_tool("database_metadata", {})
+    executed_search_plan = compile_search_plan_for_mcp(search_plan)
     search = client.call_tool("execute_search_plan", {
-        "search_plan": search_plan,
+        "search_plan": executed_search_plan,
         "country": "",
         "max_per_query": max_per_query,
         "total_limit": total_limit,
     })
+    stats = search.get("search_stats") or {}
+    audit = search.get("query_audit") or []
+    if stats.get("global_truncated") or stats.get("query_truncation_count"):
+        raise McpClientError("WHO MCP search reported truncated results")
+    if audit and any(
+        item.get("truncated") is True
+        or item.get("has_more") is True
+        or item.get("complete") is False
+        for item in audit
+        if isinstance(item, dict)
+    ):
+        raise McpClientError("WHO MCP query audit is missing or incomplete")
     registry_ids = [
         registry_id
         for hit in search.get("results") or []
@@ -79,4 +93,5 @@ def execute_who_workflow(
         "metadata": metadata,
         "search": search,
         "details": details,
+        "executed_search_plan": executed_search_plan,
     }

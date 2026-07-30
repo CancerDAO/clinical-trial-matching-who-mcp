@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import re
 from typing import Any
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit
 
 PRODUCT_ALIASES = {
     "vegzelma": "Bevacizumab",
@@ -58,6 +58,18 @@ NATIVE_REGISTRY_PREFIXES = {
     "thailand": ("TCTR",),
     "sri lanka": ("SLCTR",),
 }
+
+
+def safe_external_url(value: Any, *, fallback: str = "#") -> str:
+    """Return a browser-safe HTTP(S) URL without accepting active schemes."""
+    raw = str(value or "").strip()
+    try:
+        parsed = urlsplit(raw)
+    except ValueError:
+        return fallback
+    if parsed.scheme.casefold() not in {"http", "https"} or not parsed.hostname:
+        return fallback
+    return raw
 
 
 def country_key(value: Any) -> str:
@@ -237,5 +249,6 @@ def resolved_trial_url(trial: dict[str, Any]) -> str:
         return "https://clinicaltrials.gov/study/" + upper
     url = str(trial.get("source_url") or "").strip()
     if "chictr.org.cn" in url:
-        return url.replace("http://", "https://").replace("showproj.aspx", "showproj.html")
-    return url or ("https://trialsearch.who.int/Trial2.aspx?TrialID=" + quote(trial_id, safe=""))
+        url = url.replace("http://", "https://")
+    fallback = "https://trialsearch.who.int/Trial2.aspx?TrialID=" + quote(trial_id, safe="")
+    return safe_external_url(url, fallback=fallback)

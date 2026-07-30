@@ -4,6 +4,7 @@
   "disease_stage_filter": "metastatic",
   "keyword_groups": [
     {
+      "dimension": "disease_biomarker",
       "label": "1. 疾病+突变特异 (KRAS G12C CRC)",
       "source": "both",
       "queries": [
@@ -26,6 +27,7 @@
       ]
     },
     {
+      "dimension": "pan_tumor",
       "label": "2. 泛化-实体瘤 (KRAS G12C all comers)",
       "source": "nct",
       "queries": [
@@ -44,6 +46,7 @@
       ]
     },
     {
+      "dimension": "combination_targets",
       "label": "3. 联合靶点 (KRAS G12C + EGFR/SHP2/SOS1)",
       "source": "both",
       "queries": [
@@ -66,6 +69,7 @@
       ]
     },
     {
+      "dimension": "pathway_resistance",
       "label": "4. 通路靶向 (RAS-ON / pan-KRAS / 耐药策略)",
       "source": "both",
       "queries": [
@@ -96,6 +100,7 @@
       ]
     },
     {
+      "dimension": "named_drug",
       "label": "5. 具体药物名穷举 (KRAS G12C drugs)",
       "source": "both",
       "queries": [
@@ -142,6 +147,7 @@
       ]
     },
     {
+      "dimension": "cell_therapy",
       "label": "6. 细胞治疗 (CRC, 不限突变)",
       "source": "both",
       "queries": [
@@ -176,6 +182,7 @@
       ]
     },
     {
+      "dimension": "immune",
       "label": "7. 免疫治疗 (post-PD-1, MSS CRC)",
       "source": "both",
       "queries": [
@@ -198,6 +205,7 @@
       ]
     },
     {
+      "dimension": "chinese_registry_terms",
       "label": "8. 中文关键词 (ChiCTR)",
       "source": "chictr",
       "queries": [

@@ -26,7 +26,7 @@ For each organ-function inclusion criterion in the trial:
 3. Compute: is patient value within ±10% of threshold?
 4. If yes, mark criterion as `⚠️ 边界` and set R4_triggered.
 
-## Real example (SYNTHETIC-CRC-LATER-LINE)
+## Synthetic later-line CRC example
 
 Patient had "renal dysfunction recent" annotation in v1.7.x but no specific eGFR captured. Many KRAS G12C trials require eGFR ≥ 60. **trial-gater should flag this as ❓ 信息缺失 + R4 latent risk**, and emit a request for the screening lab in the action items. v1.7.x silently passed it as ✅.
 

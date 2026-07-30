@@ -118,5 +118,32 @@ class ReportSafetyTests(unittest.TestCase):
         self.assertIn("https://example.org/trial/NL-TEST", html)
         self.assertNotIn(">0.7<", html)
 
+    def test_renderer_rejects_untrusted_language_and_active_url_schemes(self):
+        patient = {"patient_id": "P1", "country": "China", "mutations": []}
+        trial = {
+            "id": "T1", "resolved_source_url": "javascript:alert(1)",
+            "display_title": "Trial", "phases": [],
+            "mechanism_category": {"category": "other", "label_zh": "其他", "label_en": "Other"},
+            "country_assessment": {"class": "overseas"},
+            "gating": {
+                "verdict": "conditional", "satisfied": [], "pending": [],
+                "exclusion_reasons": [],
+            },
+            "risk_context": [], "efficacy_context": "",
+        }
+        payload = {
+            "language": "en", "patient": patient, "trials": [trial],
+            "counts": {"match": 0, "conditional": 1, "exclude": 0},
+            "geography_audit": {"overseas": 1}, "portal_delta": {},
+            "database_as_of": "2026-07-09", "database_metadata": {},
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            output = Path(tmp) / "report.html"
+            render_html(payload, output)
+            self.assertNotIn("javascript:", output.read_text(encoding="utf-8"))
+            payload["language"] = 'en\"><script>alert(1)</script>'
+            with self.assertRaisesRegex(ValueError, "language"):
+                render_html(payload, output)
+
 if __name__ == "__main__":
     unittest.main()
