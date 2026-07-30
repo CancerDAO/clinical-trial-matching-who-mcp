@@ -1,0 +1,15 @@
+{
+  "country": "China",
+  "city": "Shanghai",
+  "patient_location": "Shanghai, China",
+  "willing_to_travel_domestic": true,
+  "willing_to_travel_internationally": "unknown",
+  "travel_note": "",
+  "affordability_tier": "unknown",
+  "search_terms": {
+    "named_agents": [],
+    "combination_targets": [],
+    "pathway_terms": [],
+    "chinese_terms": []
+  }
+}

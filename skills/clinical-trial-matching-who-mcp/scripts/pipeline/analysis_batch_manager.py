@@ -14,6 +14,7 @@ from analysis_contract import (
     JOBS_SCHEMA_VERSION, SCHEMA_VERSION, build_deep_analysis_jobs, load_json,
     validate_analysis_bundle,
 )
+from io_utils import write_json_atomic
 
 
 def _batch_files(output_dir: Path, pattern: str = "batch-*.json") -> list[Path]:
@@ -84,7 +85,8 @@ def combine_analysis_stages(
 
 
 def create_deep_jobs(
-    jobs_path: Path, patient_path: Path, gater_output_dir: Path, out_path: Path
+    jobs_path: Path, patient_path: Path, gater_output_dir: Path, out_path: Path,
+    batch_size: int | None = None,
 ) -> dict[str, Any]:
     """Materialize deep jobs after complete first-stage gater output exists."""
     jobs = load_json(jobs_path)
@@ -95,10 +97,10 @@ def create_deep_jobs(
     trials = [trial for batch in jobs.get("batches") or [] for trial in batch.get("trials") or []]
     skills_root = Path(jobs["skill_paths"]["trial-gater"]).parent.parent
     deep_jobs = build_deep_analysis_jobs(
-        patient, trials, gating_trials, skills_root, batch_size=int(jobs.get("batch_size") or 5)
+        patient, trials, gating_trials, skills_root,
+        batch_size=batch_size or int(jobs.get("batch_size") or 5),
     )
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    out_path.write_text(json.dumps(deep_jobs, ensure_ascii=False, indent=2), encoding="utf-8")
+    write_json_atomic(out_path, deep_jobs)
     return {"output": str(out_path), "trials": deep_jobs["trial_count"], "validated": True}
 
 def status(jobs_path: Path, output_dir: Path) -> dict[str, Any]:
@@ -130,9 +132,17 @@ def status(jobs_path: Path, output_dir: Path) -> dict[str, Any]:
     deep_trials, deep_errors = collect_trials(output_dir, "deep-batch-*.json")
     deep_actual = {str(item.get("trial_id") or "") for item in deep_trials}
     deep_missing = sorted(deep_expected - deep_actual)
-    unexpected = sorted((gating_actual - expected) | (deep_actual - deep_expected))
+    gating_unexpected = sorted(gating_actual - expected)
+    deep_unexpected = sorted(deep_actual - deep_expected)
+    unexpected = sorted(set(gating_unexpected) | set(deep_unexpected))
     errors = gating_errors + deep_errors
-    complete = not gating_missing and not unexpected and deep_actual == deep_expected and not errors
+    gater_complete = (
+        gating_actual == expected and not gating_errors and not gating_unexpected
+    )
+    deep_complete = (
+        deep_actual == deep_expected and not deep_errors and not deep_unexpected
+    )
+    complete = gater_complete and deep_complete
     return {
         "expected": len(expected),
         "completed": len(gating_actual & expected),
@@ -143,8 +153,26 @@ def status(jobs_path: Path, output_dir: Path) -> dict[str, Any]:
         "batch_files": len(_batch_files(output_dir, "gater-batch-*.json")) + len(_batch_files(output_dir, "deep-batch-*.json")),
         "errors": errors,
         "stages": {
-            "gater": {"expected": len(expected), "completed": len(gating_actual & expected), "missing": gating_missing[:20]},
-            "deep": {"expected": len(deep_expected), "completed": len(deep_actual & deep_expected), "missing": deep_missing[:20]},
+            "gater": {
+                "expected": len(expected),
+                "completed": len(gating_actual & expected),
+                "missing_count": len(gating_missing),
+                "missing": gating_missing[:20],
+                "unexpected_count": len(gating_unexpected),
+                "unexpected": gating_unexpected[:20],
+                "errors": gating_errors,
+                "complete": gater_complete,
+            },
+            "deep": {
+                "expected": len(deep_expected),
+                "completed": len(deep_actual & deep_expected),
+                "missing_count": len(deep_missing),
+                "missing": deep_missing[:20],
+                "unexpected_count": len(deep_unexpected),
+                "unexpected": deep_unexpected[:20],
+                "errors": deep_errors,
+                "complete": deep_complete,
+            },
         },
         "complete": complete,
     }
@@ -192,8 +220,7 @@ def merge(
     }
     expected = _expected_ids(jobs)
     validate_analysis_bundle(bundle, patient, expected)
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    out_path.write_text(json.dumps(bundle, ensure_ascii=False, indent=2), encoding="utf-8")
+    write_json_atomic(out_path, bundle)
     return {"output": str(out_path), "trials": len(trials), "validated": True}
 
 

@@ -55,6 +55,29 @@ def deep_item(trial_id: str) -> dict:
 
 
 class AnalysisBatchManagerTests(unittest.TestCase):
+    def test_deep_jobs_do_not_repeat_full_eligibility_after_gating(self):
+        trial = {
+            "id": "T1",
+            "title": "Phase 1 study",
+            "brief_summary": "Treatment study",
+            "eligibility_full": "very long eligibility text",
+            "parsed_criteria": {"inclusion": ["criterion"]},
+            "matched_queries": [{"query": "test"}],
+        }
+        jobs = build_deep_analysis_jobs(
+            {"cancer_type": "NSCLC"},
+            [trial],
+            [gating_item("T1", "conditional")],
+            ROOT.parent,
+            batch_size=1,
+        )
+        deep_trial = jobs["batches"][0]["trials"][0]
+        self.assertEqual(deep_trial["title"], trial["title"])
+        self.assertIn("gating", deep_trial)
+        self.assertNotIn("eligibility_full", deep_trial)
+        self.assertNotIn("parsed_criteria", deep_trial)
+        self.assertNotIn("matched_queries", deep_trial)
+
     def test_status_reports_missing_and_duplicate_safe_coverage(self):
         jobs = {
             "batches": [
@@ -177,6 +200,25 @@ class AnalysisBatchManagerTests(unittest.TestCase):
         self.assertTrue(result["complete"])
         self.assertEqual(result["stages"]["gater"]["expected"], 2)
         self.assertEqual(result["stages"]["deep"]["expected"], 1)
+
+    def test_staged_status_marks_gater_complete_before_deep_exists(self):
+        jobs = {
+            "schema_version": "clinical-analysis-jobs-v2",
+            "batches": [{"trials": [{"id": "KEEP"}, {"id": "DROP"}]}],
+        }
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            jobs_path = root / "jobs.json"
+            jobs_path.write_text(json.dumps(jobs), encoding="utf-8")
+            (root / "gater-batch-001.json").write_text(json.dumps({
+                "analyzed_trials": [gating_item("KEEP", "conditional"), gating_item("DROP", "exclude")]
+            }), encoding="utf-8")
+            result = status(jobs_path, root)
+        self.assertFalse(result["complete"])
+        self.assertTrue(result["stages"]["gater"]["complete"])
+        self.assertFalse(result["stages"]["deep"]["complete"])
+        self.assertEqual(result["stages"]["gater"]["missing"], [])
+        self.assertEqual(result["stages"]["deep"]["missing"], ["KEEP"])
 
 
 if __name__ == "__main__":

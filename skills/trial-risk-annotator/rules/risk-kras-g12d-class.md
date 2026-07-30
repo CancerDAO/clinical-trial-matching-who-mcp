@@ -1,6 +1,14 @@
 # Risk profile: KRAS G12D inhibitor
 
-Drugs in class: MRTX1133 (Mirati), GFH375 / fortemastinib (innotech), RMC-9805 (Revolution Medicines), ASP3082 (Astellas), JYP0015 (Joyo Pharma).
+## Current naming and evidence policy
+
+GFH375 is also known as VS-7375. Do not use `fortemastinib (innotech)` as its
+name or sponsor. Cohort size, ORR, PFS, sponsor, and data-cut date must come
+from a grounded publication candidate or current registry record; fixed
+class-rule estimates below are historical context and must not be copied into
+a patient report without that evidence.
+
+Drugs in class include MRTX1133, GFH375 / VS-7375, RMC-9805, ASP3082, and JYP0015. Current sponsor and development status must come from grounded evidence.
 
 ## Cancer-type specificity (CRITICAL)
 
@@ -13,7 +21,7 @@ KRAS G12D drug-class baselines come almost entirely from **PDAC** patient cohort
 ## Published efficacy (PDAC, G12D)
 
 - **MRTX1133**: preclinical strong, early Phase 1 ORR ~30-40%
-- **GFH375**: ESMO 2025 readout — n=66 KRAS G12D PDAC, ORR ~40%, mPFS ~5.5 mo
+- **GFH375 / VS-7375**: use only cohort size, ORR, PFS, sponsor, and data-cut values restored from a grounded publication candidate
 - **RMC-9805**: Phase 1 multi-tumor, data immature
 - Class baseline (PDAC): expected ORR 20–40%, mPFS 3–6 months
 

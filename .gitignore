@@ -11,6 +11,13 @@ __pycache__/
 node_modules/
 production-runs/
 test-artifacts/
+/run/
+patient.json
+**/normalized-patient.json
+**/runner-inputs/
+**/formal-run-state.json
+**/report.html
+**/validation-report.html
 *.db
 *.sqlite
 *.sqlite3

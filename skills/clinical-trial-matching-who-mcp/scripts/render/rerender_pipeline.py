@@ -18,8 +18,8 @@ for directory in (
 ):
     sys.path.insert(0, str(directory))
 
-from analysis_contract import repair_mojibake, report_language
-from html_renderer import render_html
+from analysis_contract import report_language
+from html_renderer import render_html, render_validation_html
 from mechanism_categories import classify_mechanism
 from registry_presentation import (
     assess_country_evidence,
@@ -30,7 +30,7 @@ from registry_presentation import (
 
 def refresh_presentational_fields(payload: dict[str, Any]) -> dict[str, Any]:
     """Refresh only deterministic fields; preserve clinical/model provenance."""
-    refreshed = repair_mojibake(payload)
+    refreshed = json.loads(json.dumps(payload, ensure_ascii=False))
     patient = refreshed.get("patient") or {}
     language = report_language(patient)
     refreshed["language"] = language
@@ -40,7 +40,14 @@ def refresh_presentational_fields(payload: dict[str, Any]) -> dict[str, Any]:
     for trial in refreshed.get("trials") or []:
         gating = trial.get("gating") or {}
         counts[gating.get("verdict") or "conditional"] += 1
-        trial["mechanism_category"] = classify_mechanism(trial, patient=patient)
+        analysis = (
+            {"efficacy_context": trial["efficacy_context_detail"]}
+            if isinstance(trial.get("efficacy_context_detail"), dict)
+            else None
+        )
+        trial["mechanism_category"] = classify_mechanism(
+            trial, analysis=analysis, patient=patient
+        )
         trial["country_assessment"] = assess_country_evidence(trial, patient)
         trial["resolved_source_url"] = resolved_trial_url(trial)
         trial["display_title"] = patient_facing_title(trial, language)
@@ -72,10 +79,15 @@ def main() -> None:
     )
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
+    # Only full_pipeline.finalize may issue a formal report. A presentation-only
+    # rerender cannot re-prove freshness or whole-run coverage.
+    payload["formal_report_ready"] = False
+    payload["report_mode"] = "validation"
     (out / "pipeline.json").write_text(
         json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
     )
-    render_html(payload, out / "report.html")
+    (out / "report.html").unlink(missing_ok=True)
+    render_validation_html(payload, out / "validation-report.html")
     print(json.dumps({
         "output": str(out),
         "formal_report_ready": bool(payload.get("formal_report_ready")),

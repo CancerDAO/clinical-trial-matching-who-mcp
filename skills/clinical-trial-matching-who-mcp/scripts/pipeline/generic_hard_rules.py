@@ -6,7 +6,7 @@ from collections.abc import Iterable, Mapping
 from copy import deepcopy
 from typing import Any
 
-RULESET_VERSION = "generic-hard-rules-v2"
+RULESET_VERSION = "generic-hard-rules-v1"
 _SEX = {"female": "female", "f": "female", "woman": "female", "women": "female",
         "male": "male", "m": "male", "man": "male", "men": "male"}
 _ALL_SEXES = {"all", "both", "any"}
@@ -21,39 +21,11 @@ def _first(mapping: Mapping[str, Any], *keys: str) -> tuple[Any, str | None]:
 
 
 def _section(trial: Mapping[str, Any]) -> Mapping[str, Any]:
-    for key in ("structured_eligibility", "eligibility", "parsed_criteria"):
+    for key in ("structured_eligibility", "eligibility"):
         value = trial.get(key)
         if isinstance(value, Mapping):
             return value
     return {}
-
-
-def _derive_explicit_constraints(eligibility: Mapping[str, Any]) -> dict[str, Any]:
-    inclusion = eligibility.get("inclusion") or []
-    text = " ".join(str(item) for item in inclusion).casefold()
-    derived: dict[str, Any] = {}
-    patterns = {
-        "minimum_age": (
-            r"\bage\s*(?:>=|≥|at least)\s*(\d{1,3})\s*(?:years?|yrs?)\b",
-            r"\b(?:aged?|patients?)\s*(\d{1,3})\s*(?:years?|yrs?)\s*(?:or older|and older|minimum)\b",
-        ),
-        "maximum_age": (
-            r"\bage\s*(?:<=|≤|no more than)\s*(\d{1,3})\s*(?:years?|yrs?)\b",
-            r"\b(?:aged?|patients?)\s*(?:up to|maximum)\s*(\d{1,3})\s*(?:years?|yrs?)\b",
-        ),
-        "maximum_ecog": (
-            r"\becog(?:\s+performance\s+status)?\s*(?:of\s*)?(?:<=|≤|0\s*[-–]\s*)?([0-4])\b",
-        ),
-    }
-    for field, field_patterns in patterns.items():
-        match = next((re.search(pattern, text, re.I) for pattern in field_patterns if re.search(pattern, text, re.I)), None)
-        if match:
-            derived[field] = int(match.group(1))
-    if re.search(r"\b(?:female|women)\s+(?:participants?|patients?)\s+only\b", text):
-        derived["sex"] = "female"
-    elif re.search(r"\b(?:male|men)\s+(?:participants?|patients?)\s+only\b", text):
-        derived["sex"] = "male"
-    return derived
 
 
 def _number(value: Any) -> float | None:
@@ -107,15 +79,12 @@ def evaluate_generic_hard_rules(patient: Mapping[str, Any], trial: Mapping[str, 
     if not isinstance(patient, Mapping) or not isinstance(trial, Mapping):
         raise TypeError("patient and trial must be mappings")
     eligibility = _section(trial)
-    derived = _derive_explicit_constraints(eligibility)
     triggered: list[dict[str, Any]] = []
 
     patient_age, patient_age_key = _first(patient, "age_years", "age")
     age_months = _age_months(patient_age)
     minimum_age, _ = _first(eligibility, "minimum_age", "min_age")
     maximum_age, _ = _first(eligibility, "maximum_age", "max_age")
-    minimum_age = minimum_age if minimum_age is not None else derived.get("minimum_age")
-    maximum_age = maximum_age if maximum_age is not None else derived.get("maximum_age")
     if minimum_age is None:
         minimum_age, _ = _first(trial, "minimum_age", "min_age")
     if maximum_age is None:
@@ -129,7 +98,6 @@ def evaluate_generic_hard_rules(patient: Mapping[str, Any], trial: Mapping[str, 
 
     patient_sex, patient_sex_key = _first(patient, "sex_at_birth", "sex")
     trial_sex, _ = _first(eligibility, "sex", "gender")
-    trial_sex = trial_sex if trial_sex is not None else derived.get("sex")
     if trial_sex is None:
         trial_sex, _ = _first(trial, "sex", "gender")
     patient_sex_norm, trial_sex_norm = _normalized_sex(patient_sex), _normalized_sex(trial_sex)
@@ -139,12 +107,7 @@ def evaluate_generic_hard_rules(patient: Mapping[str, Any], trial: Mapping[str, 
 
     patient_ecog, patient_ecog_key = _first(patient, "ecog", "ecog_performance_status")
     ecog = _number(patient_ecog)
-    min_ecog, _ = _first(eligibility, "minimum_ecog", "min_ecog", "ecog_min")
     max_ecog, _ = _first(eligibility, "maximum_ecog", "max_ecog", "ecog_max")
-    max_ecog = max_ecog if max_ecog is not None else derived.get("maximum_ecog")
-    if ecog is not None and _number(min_ecog) is not None and ecog < _number(min_ecog):
-        triggered.append(_trigger("GHR-ECOG-MIN", patient_ecog_key or "ecog", patient_ecog, min_ecog,
-                                  "Patient ECOG is explicitly below the trial's structured range."))
     if ecog is not None and _number(max_ecog) is not None and ecog > _number(max_ecog):
         triggered.append(_trigger("GHR-ECOG-MAX", patient_ecog_key or "ecog", patient_ecog, max_ecog,
                                   "Patient ECOG is explicitly above the trial's structured range."))

@@ -2,10 +2,15 @@
 from __future__ import annotations
 
 import datetime as dt
+import ipaddress
 import json
 import re
+import socket
+import threading
+import time
 import urllib.error
 import urllib.request
+from urllib.parse import urljoin, urlsplit
 from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
 from typing import Any, Callable
@@ -16,6 +21,27 @@ INACTIVE = {
     "SUSPENDED", "NO_LONGER_RECRUITING",
 }
 CTGOV = "https://clinicaltrials.gov/api/v2/studies"
+WHO_DETAIL = "https://trialsearch.who.int/Trial2.aspx"
+REGISTRY_HOST_SUFFIXES = (
+    "clinicaltrials.gov", "trialsearch.who.int", "chictr.org.cn",
+    "chictr.cn", "euclinicaltrials.eu", "ctri.nic.in", "isrctn.com",
+    "drks.de", "umin.ac.jp",
+    "cris.nih.go.kr", "irct.ir", "pactr.samrc.ac.za",
+    "ensaiosclinicos.gov.br", "registroclinico.sld.cu", "slctr.lk",
+    "clinicaltrials.in.th", "trialregister.nl",
+)
+# jRCT and ANZCTR are intentionally absent: their published terms restrict
+# automated collection. Those records use the WHO detail fallback unless an
+# authorized API adapter is configured in a deployment.
+_CACHE: dict[str, tuple[str, str]] = {}
+_CACHE_LOCK = threading.Lock()
+_HOST_LIMITS: dict[str, threading.BoundedSemaphore] = {}
+_HOST_LIMITS_LOCK = threading.Lock()
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
 
 
 def _status(value: Any) -> str:
@@ -29,10 +55,72 @@ def _status(value: Any) -> str:
     return aliases.get(normalized, normalized)
 
 
+def _validate_registry_url(url: str) -> None:
+    parsed = urlsplit(url)
+    host = (parsed.hostname or "").casefold().rstrip(".")
+    if parsed.scheme.casefold() not in {"http", "https"} or not host:
+        raise ValueError("Registry URL must use HTTP(S)")
+    if not any(host == suffix or host.endswith("." + suffix) for suffix in REGISTRY_HOST_SUFFIXES):
+        raise ValueError(f"Registry host is not allowlisted: {host}")
+    try:
+        addresses = {
+            item[4][0] for item in socket.getaddrinfo(host, parsed.port or 443, type=socket.SOCK_STREAM)
+        }
+    except socket.gaierror as exc:
+        raise ValueError(f"Registry host could not be resolved: {host}") from exc
+    if any(
+        (ip := ipaddress.ip_address(address)).is_private
+        or ip.is_loopback or ip.is_link_local or ip.is_reserved or ip.is_unspecified
+        for address in addresses
+    ):
+        raise ValueError("Registry URL resolves to a non-public address")
+
+
 def _fetch(url: str, timeout: float) -> tuple[str, str]:
-    request = urllib.request.Request(url, headers={"User-Agent": "CancerDAO-live-registry-verifier/1.0"})
-    with urllib.request.urlopen(request, timeout=timeout) as response:
-        return response.geturl(), response.read().decode("utf-8", errors="replace")
+    with _CACHE_LOCK:
+        if url in _CACHE:
+            return _CACHE[url]
+    current = url
+    opener = urllib.request.build_opener(_NoRedirect())
+    for redirect_count in range(4):
+        _validate_registry_url(current)
+        host = (urlsplit(current).hostname or "").casefold()
+        with _HOST_LIMITS_LOCK:
+            limiter = _HOST_LIMITS.setdefault(host, threading.BoundedSemaphore(2))
+        request = urllib.request.Request(
+            current, headers={"User-Agent": "CancerDAO-live-registry-verifier/1.1"}
+        )
+        with limiter:
+            for attempt in range(3):
+                try:
+                    with opener.open(request, timeout=timeout) as response:
+                        resolved = response.geturl()
+                        _validate_registry_url(resolved)
+                        result = (
+                            resolved,
+                            response.read().decode("utf-8", errors="replace"),
+                        )
+                        with _CACHE_LOCK:
+                            _CACHE[url] = result
+                        return result
+                except urllib.error.HTTPError as exc:
+                    if exc.code in {301, 302, 303, 307, 308}:
+                        location = exc.headers.get("Location")
+                        if not location:
+                            raise
+                        current = urljoin(current, location)
+                        _validate_registry_url(current)
+                        break
+                    if exc.code not in {429, 500, 502, 503, 504} or attempt == 2:
+                        raise
+                    retry_after = exc.headers.get("Retry-After", "")
+                    delay = float(retry_after) if retry_after.isdigit() else 0.5 * (2 ** attempt)
+                    time.sleep(min(delay, 10))
+            else:
+                continue
+        if redirect_count == 3:
+            break
+    raise urllib.error.URLError("Registry redirect limit exceeded")
 
 
 def _nct_id(trial: dict[str, Any]) -> str:
@@ -42,6 +130,49 @@ def _nct_id(trial: dict[str, Any]) -> str:
         for item in trial.get("registry_ids") or []
     )
     return next((str(value).upper() for value in values if re.fullmatch(r"NCT\d{8}", str(value or ""), re.I)), "")
+
+
+def _who_fallback_url(trial: dict[str, Any]) -> str:
+    trial_id = str(
+        trial.get("primary_registry_id") or trial.get("id") or ""
+    ).strip()
+    return f"{WHO_DETAIL}?TrialID={trial_id}" if trial_id else ""
+
+
+def _webpage_status(body: str) -> str:
+    plain = " ".join(re.sub(r"<[^>]+>", " ", body).split())
+    chinese = re.search(r"(?:招募状态|募集状态|研究状态)\s*[:：]?\s*([^\s,，。；;]{1,20})", plain)
+    if chinese:
+        value = chinese.group(1)
+        if any(term in value for term in ("已终止", "已完成", "暂停", "不再招募", "停止招募")):
+            return "TERMINATED" if "终止" in value else "NO_LONGER_RECRUITING"
+        if any(term in value for term in ("招募中", "正在招募", "尚未招募")):
+            return "NOT_YET_RECRUITING" if "尚未" in value else "RECRUITING"
+    label = re.search(
+        r"(?:recruitment|recruiting|trial|overall)\s+status\s*[:\-]?\s*(.{0,100})",
+        plain, re.I,
+    )
+    status_window = label.group(1) if label else ""
+    normalized_window = re.sub(
+        r"[^A-Z]+", "_", status_window.upper()
+    ).strip("_")
+    # Keep negative and compound states ahead of their RECRUITING substring.
+    ordered_patterns = (
+        ("ACTIVE_NOT_RECRUITING", "ACTIVE_NOT_RECRUITING"),
+        ("NOT_RECRUITING", "NO_LONGER_RECRUITING"),
+        ("NO_LONGER_RECRUITING", "NO_LONGER_RECRUITING"),
+        ("NOT_YET_RECRUITING", "NOT_YET_RECRUITING"),
+        ("ENROLLING_BY_INVITATION", "ENROLLING_BY_INVITATION"),
+        ("TERMINATED", "TERMINATED"),
+        ("WITHDRAWN", "WITHDRAWN"),
+        ("SUSPENDED", "SUSPENDED"),
+        ("COMPLETED", "COMPLETED"),
+        ("RECRUITING", "RECRUITING"),
+    )
+    return next(
+        (status for marker, status in ordered_patterns if marker in normalized_window),
+        "",
+    )
 
 
 def verify_one(
@@ -63,19 +194,7 @@ def verify_one(
             source_url = f"https://clinicaltrials.gov/study/{nct}"
             method = "clinicaltrials.gov_v2_api"
         else:
-            plain = " ".join(re.sub(r"<[^>]+>", " ", body).split())
-            label = re.search(
-                r"(?:recruitment|recruiting|trial|overall)\s+status\s*[:\-]?\s*(.{0,100})",
-                plain, re.I,
-            )
-            status_window = label.group(1) if label else ""
-            known = sorted(ACTIVE | INACTIVE, key=len, reverse=True)
-            normalized_window = _status(status_window)
-            live_status = next(
-                (candidate for candidate in known
-                 if candidate in normalized_window),
-                "",
-            )
+            live_status = _webpage_status(body)
             updated = ""
             source_url, method = resolved_url, "direct_registry_webpage"
         if live_status in ACTIVE:
@@ -94,6 +213,37 @@ def verify_one(
             "http_reachable": True,
         }
     except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, OSError, ValueError, json.JSONDecodeError) as exc:
+        fallback_url = _who_fallback_url(trial)
+        if fallback_url and fallback_url != direct_url:
+            try:
+                resolved_url, body = fetcher(fallback_url, timeout)
+                live_status = _webpage_status(body)
+                result_status = (
+                    "active" if live_status in ACTIVE
+                    else "inactive" if live_status in INACTIVE
+                    else "unknown"
+                )
+                return {
+                    "status": result_status,
+                    "overall_status": live_status,
+                    "last_update_date": "",
+                    "source_url": resolved_url,
+                    "method": "who_ictrp_fallback",
+                    "checked_at": checked_at,
+                    "http_reachable": True,
+                    "fallback_used": True,
+                    "direct_error": str(exc),
+                }
+            except (
+                urllib.error.URLError, urllib.error.HTTPError, TimeoutError,
+                OSError, ValueError, json.JSONDecodeError,
+            ) as fallback_exc:
+                return {
+                    "status": "error", "checked_at": checked_at,
+                    "source_url": direct_url, "fallback_url": fallback_url,
+                    "http_reachable": False,
+                    "error": str(exc), "fallback_error": str(fallback_exc),
+                }
         return {
             "status": "error", "checked_at": checked_at, "source_url": direct_url,
             "http_reachable": False, "error": str(exc),
@@ -101,7 +251,7 @@ def verify_one(
 
 
 def verify_and_partition(
-    trials: list[dict[str, Any]], *, workers: int = 8, timeout: float = 20,
+    trials: list[dict[str, Any]], *, workers: int = 4, timeout: float = 20,
     verifier: Callable[..., dict[str, Any]] = verify_one,
 ) -> dict[str, Any]:
     copies = [deepcopy(trial) for trial in trials]

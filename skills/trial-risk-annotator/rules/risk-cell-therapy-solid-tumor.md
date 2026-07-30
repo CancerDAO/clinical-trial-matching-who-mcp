@@ -1,5 +1,12 @@
 # Risk profile: Cell therapy in solid tumors
 
+## Patient-data boundary
+
+Never copy a numeric TMB or other patient value from this rule file. Discuss
+TMB only when the value is present in the authoritative current patient
+envelope. Any fixed patient value appearing later in this document is a stale
+example and must be ignored.
+
 Covers CAR-T, TIL (tumor infiltrating lymphocyte), TCR-T (T-cell receptor engineered), CIK / DC-CIK, and engineered NK therapies for solid tumors. **Distinct from hematologic CAR-T** — solid tumor cell therapy is much earlier in clinical development with different efficacy/safety profile.
 
 ## Universal cautions for solid tumor cell therapy
@@ -21,7 +28,7 @@ Covers CAR-T, TIL (tumor infiltrating lymphocyte), TCR-T (T-cell receptor engine
 ## TIL (tumor-infiltrating lymphocyte)
 
 - **Efficacy in solid tumor**: established in melanoma (lifileucel, ORR ~30%); emerging data in NSCLC, HNSCC, cervical
-- **CRC**: limited data; mostly research-grade trials. Best response to TIL correlates with high TMB and neoantigen load — patient's TMB 7.7 muts/Mb is borderline (TMB-H usually defined as ≥10).
+- **CRC**: limited data; mostly research-grade trials. Discuss TMB and neoantigen load only when the current authoritative patient envelope contains a value.
 - **Manufacture**: requires fresh tumor tissue, surgical or core biopsy of accessible lesion. Outpatient manufacture not yet routine in China.
 
 ## TCR-T (T-cell receptor)

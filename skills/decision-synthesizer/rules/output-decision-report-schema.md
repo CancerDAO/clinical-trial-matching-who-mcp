@@ -2,7 +2,8 @@
 
 The decision report is consumed by the report renderer. Examples must use synthetic patient and trial identifiers.
 
-    {
+```json
+{
       "report_version": "v2.0.0",
       "generated_at": "ISO-8601",
       "patient_summary": {
@@ -58,7 +59,8 @@ The decision report is consumed by the report renderer. Examples must use synthe
         "total_trials_analyzed": 0,
         "decision_paths_emitted": 0
       }
-    }
+}
+```
 
 ## Field requirements
 

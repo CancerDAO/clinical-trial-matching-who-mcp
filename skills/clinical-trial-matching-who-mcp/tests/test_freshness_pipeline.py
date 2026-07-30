@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-import datetime as dt
 import json
 import os
 import sys
 import tempfile
 import unittest
+import urllib.error
 from pathlib import Path
 from unittest.mock import patch
 
@@ -13,9 +13,9 @@ ROOT = Path(__file__).resolve().parents[1]
 for relative in ("scripts/pipeline", "scripts/retrieval", "scripts/verification"):
     sys.path.insert(0, str(ROOT / relative))
 
-from direct_registry_verifier import verify_and_partition, verify_one
+from direct_registry_verifier import _fetch, _webpage_status, verify_and_partition, verify_one
 from model_batch_executor import execute_batches
-from who_portal_delta import build_delta
+from who_portal_delta import WhoPortalClient, build_delta
 
 
 class _Portal:
@@ -44,6 +44,18 @@ class FreshnessPipelineTests(unittest.TestCase):
         self.assertEqual([trial["id"] for trial in payload["trials"]], ["NCT00000001"])
         self.assertEqual(len(payload["query_audit"]), 3)
         self.assertTrue(all(item["complete"] for item in payload["query_audit"]))
+
+    def test_portal_application_error_page_is_not_a_successful_zero_result(self):
+        client = WhoPortalClient(delay=0)
+        responses = iter((
+            '<input type="hidden" name="__VIEWSTATE" value="x">',
+            "<html><title>Error Page</title><body>NoAccess.aspx</body></html>",
+        ))
+        client._open = lambda url, data=None: next(responses)
+        with self.assertRaisesRegex(RuntimeError, "error page"):
+            client.search(
+                condition="cancer", date_start="01/01/2026", date_end="02/01/2026"
+            )
 
     def test_nct_live_status_is_read_from_direct_api(self):
         body = json.dumps({"protocolSection": {"statusModule": {
@@ -78,6 +90,41 @@ class FreshnessPipelineTests(unittest.TestCase):
             ),
         )
         self.assertEqual(result["status"], "inactive")
+
+    def test_chinese_registry_statuses_are_parsed_without_substring_collision(self):
+        self.assertEqual(_webpage_status("\u62db\u52df\u72b6\u6001\uff1a\u5df2\u7ec8\u6b62"), "TERMINATED")
+        self.assertEqual(_webpage_status("\u62db\u52df\u72b6\u6001\uff1a\u62db\u52df\u4e2d"), "RECRUITING")
+
+    def test_plain_not_recruiting_is_never_classified_as_active(self):
+        self.assertEqual(
+            _webpage_status("Overall status: Not Recruiting"),
+            "NO_LONGER_RECRUITING",
+        )
+        self.assertEqual(_webpage_status("Overall status: Terminated"), "TERMINATED")
+
+    def test_direct_registry_failure_falls_back_to_who(self):
+        calls = []
+
+        def fetcher(url, timeout):
+            calls.append(url)
+            if "clinicaltrials.gov/api" in url:
+                raise urllib.error.URLError("direct unavailable")
+            return (
+                url,
+                "<td>Recruitment status:</td><td>Recruiting</td>",
+            )
+
+        result = verify_one({"id": "NCT12345678"}, fetcher=fetcher)
+        self.assertEqual(result["status"], "active")
+        self.assertEqual(result["method"], "who_ictrp_fallback")
+        self.assertTrue(result["fallback_used"])
+        self.assertEqual(len(calls), 2)
+
+    def test_registry_fetch_rejects_local_and_active_schemes(self):
+        with self.assertRaisesRegex(ValueError, "HTTP"):
+            _fetch(Path(__file__).resolve().as_uri(), 1)
+        with self.assertRaisesRegex(ValueError, "allowlisted"):
+            _fetch("https://example.test/trial", 1)
 
     def test_batch_executor_runs_all_batches_and_resumes(self):
         with tempfile.TemporaryDirectory() as temp:

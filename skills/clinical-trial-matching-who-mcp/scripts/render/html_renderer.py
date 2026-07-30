@@ -1,10 +1,10 @@
 """Single patient-report renderer for validated generic clinical analysis."""
 from __future__ import annotations
 
-import datetime as dt
 import html
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 from mechanism_categories import CATEGORY_ORDER, classify_mechanism
 
@@ -12,10 +12,19 @@ from mechanism_categories import CATEGORY_ORDER, classify_mechanism
 def classify_treatment_mechanism(trial: dict, verdict: str = "", analysis: dict | None = None) -> tuple[str, str, str]:
     result = classify_mechanism(trial, analysis=analysis)
     return result["label_zh"], result["label_zh"], result["category"]
-def esc(v:Any)->str:return html.escape(str(v or ""))
+def esc(v: Any) -> str:
+ return html.escape("" if v is None else str(v), quote=True)
 
 
-def development_evidence_html(trial: dict[str, Any], zh: bool) -> str:
+def safe_external_url(value: Any, *, fallback: str = "#") -> str:
+ try:
+  parsed = urlsplit(str(value or "").strip())
+ except ValueError:
+  return fallback
+ return str(value).strip() if parsed.scheme.casefold() in {"http", "https"} and parsed.hostname else fallback
+
+
+def _legacy_development_evidence_html(trial: dict[str, Any], zh: bool) -> str:
  evidence=trial.get("development_evidence") or []; search=trial.get("evidence_search") or {}
  if not evidence and not search:return ""
  heading="研发与既往证据" if zh else "Development and prior evidence"
@@ -24,7 +33,9 @@ def development_evidence_html(trial: dict[str, Any], zh: bool) -> str:
   for item in evidence:
    stage=item.get("evidence_stage") or ""
    citation=item.get("citation") or ""
-   url=item.get("url") or ""
+   url=safe_external_url(item.get("url"))
+   if url == "#":
+    url = ""
    link=f'<a href="{esc(url)}" target="_blank" rel="noopener">{esc(citation)}</a>' if url else esc(citation)
    findings=("主要结果：" if zh else "Findings: ")+str(item.get("findings") or "")
    applicability=("与患者的关系：" if zh else "Patient applicability: ")+str(item.get("applicability") or "")
@@ -36,7 +47,79 @@ def development_evidence_html(trial: dict[str, Any], zh: bool) -> str:
   body=f'<p>{esc(note)}</p>'
  return f"<h4>{heading}</h4>{body}"
 
+
+def development_evidence_html(trial: dict[str, Any], zh: bool) -> str:
+ evidence = trial.get("development_evidence") or []
+ search = trial.get("evidence_search") or {}
+ if not evidence and not search:
+  return ""
+ heading = "研发与既往证据" if zh else "Development and prior evidence"
+ if not evidence:
+  note = search.get("summary") or (
+   "已检索，但未找到与该药物及患者癌种直接相关且可核实的公开论文。"
+   if zh else
+   "The search found no verifiable publication directly relevant to this agent and patient cancer."
+  )
+  return f"<h4>{heading}</h4><p>{esc(note)}</p>"
+ rows = []
+ for item in evidence:
+  stage = item.get("evidence_stage") or ""
+  citation = item.get("citation") or ""
+  url = safe_external_url(item.get("url"))
+  link = (
+   f'<a href="{esc(url)}" target="_blank" rel="noopener">{esc(citation)}</a>'
+   if url != "#" else esc(citation)
+  )
+  findings = ("主要结果：" if zh else "Findings: ") + str(item.get("findings") or "")
+  applicability = (
+   ("与患者的关系：" if zh else "Patient applicability: ")
+   + str(item.get("applicability") or "")
+  )
+  limitations = ("限制：" if zh else "Limitations: ") + str(item.get("limitations") or "")
+  rows.append(
+   f'<li><b>{esc(stage)}</b> · {link}<div>{esc(findings)}</div>'
+   f'<div>{esc(applicability)}</div><div>{esc(limitations)}</div></li>'
+  )
+ return f'<h4>{heading}</h4><ul class="evidence-list">{"".join(rows)}</ul>'
+
+
+def decision_report_html(payload: dict[str, Any], zh: bool) -> str:
+ decision = payload.get("decision_report") or {}
+ paths = decision.get("decision_paths") or []
+ goals = decision.get("goals_of_care") or {}
+ if not paths and not goals:
+  return ""
+ title = "决策核实路径" if zh else "Decision verification paths"
+ note = (
+  "以下为需要与医生及研究中心核实的优先路径，不是治疗建议或入组结论。"
+  if zh else
+  "These are prioritized verification paths for discussion with clinicians and study centres, not treatment recommendations."
+ )
+ rows = []
+ for item in paths:
+  if not isinstance(item, dict):
+   continue
+  rank = item.get("rank")
+  trial_id = item.get("trial_id")
+  rationale = item.get("rationale")
+  if trial_id and rationale:
+   rows.append(
+    f"<li><b>{esc(rank)}. {esc(trial_id)}</b><div>{esc(rationale)}</div></li>"
+   )
+ goals_html = ""
+ if goals.get("triggered") is True:
+  reasons = "; ".join(str(value) for value in goals.get("reasons") or [])
+  label = "建议同步进行治疗目标讨论" if zh else "A goals-of-care discussion is also recommended"
+  goals_html = f"<p><b>{esc(label)}:</b> {esc(reasons)}</p>"
+ return (
+  f'<section class="overview"><h3>{esc(title)}</h3><p>{esc(note)}</p>'
+  f'<ol class="evidence-list">{"".join(rows)}</ol>{goals_html}</section>'
+ )
+
+
 def render_html(p: dict[str, Any], path: Path) -> None:
+ if p.get("language") not in {"zh-CN", "en"}:
+  raise ValueError("Report language must be 'zh-CN' or 'en'")
  zh=p["language"]=="zh-CN"; patient=p["patient"]; trials=p["trials"]; loc=patient.get("country","")
  T=lambda z,e:z if zh else e
  access_defs=[
@@ -71,6 +154,14 @@ def render_html(p: dict[str, Any], path: Path) -> None:
    verdict={"match":T("\u9884\u5339\u914d","Potential match"),"conditional":T("\u9700\u786e\u8ba4","Conditional"),"exclude":T("\u4e0d\u7b26\u5408","Excluded")}[ga["verdict"]]
    evidence=ga["satisfied"]+ga["pending"]+ga["exclusion_reasons"]
    status_labels={"met":T("满足","Met"),"likely_met":T("初步满足","Likely met"),"unknown":T("需确认","Needs confirmation"),"needs_confirmation":T("需确认","Needs confirmation"),"potential_conflict":T("潜在冲突","Potential conflict"),"missing":T("登记数据缺失","Registry data missing")}
+   status_labels = {
+    "met": T("满足", "Met"),
+    "likely_met": T("初步满足", "Likely met"),
+    "unknown": T("需确认", "Needs confirmation"),
+    "needs_confirmation": T("需确认", "Needs confirmation"),
+    "potential_conflict": T("潜在冲突", "Potential conflict"),
+    "missing": T("信息缺失", "Information missing"),
+   }
    evaluations=(ga.get("inclusion_evaluation") or [])+(ga.get("exclusion_evaluation") or [])
    for item in evaluations:
     if isinstance(item,dict):
@@ -78,7 +169,8 @@ def render_html(p: dict[str, Any], path: Path) -> None:
    lis="".join(f"<li>{esc(x)}</li>" for x in evidence) or f"<li>{T(chr(38656)+chr(20013)+chr(24515)+chr(22797)+chr(26680)+chr(27491)+chr(24335)+chr(26041)+chr(26696),'Formal protocol review required')}</li>"
    risk_html="".join(f"<li>{esc(x)}</li>" for x in t["risk_context"])
    development_html=development_evidence_html(t,zh)
-   cards.append(f"""<details class="trial {ga['verdict']}" data-access="{display_access_key}"><summary><span class="tier-dot"></span><div class="s-main"><div class="s-title">{esc(t['display_title'])}</div><div class="s-meta"><a class="nct" href="{esc(t.get('resolved_source_url'))}" target="_blank" rel="noopener">{esc(t.get('id'))}</a><span class="chip chip-ph">{esc('/'.join(t.get('phases') or []) or 'Phase N/A')}</span><span class="chip chip-mech">{esc(m['label_zh' if zh else 'label_en'])}</span><span class="chip chip-access">{esc(access)}</span><span class="chip chip-verdict">{esc(verdict)}</span></div></div><span class="caret">\u25be</span></summary><div class="body"><p>{esc(t['efficacy_context'])}</p>{development_html}<h4>{T(chr(20837)+chr(25490)+chr(26680)+chr(23545),'Eligibility review')}</h4><ul>{lis}</ul><h4>{T(chr(39118)+chr(38505)+chr(32972)+chr(26223),'Risk context')}</h4><ul>{risk_html}</ul><div class="next"><b>{T(chr(19979)+chr(19968)+chr(27493),'Next step')} \u00b7 </b>{esc(access)}</div></div></details>""")
+   trial_url=safe_external_url(t.get("resolved_source_url"))
+   cards.append(f"""<details class="trial {ga['verdict']}" data-access="{display_access_key}" data-verdict="{esc(ga['verdict'])}"><summary><span class="tier-dot"></span><div class="s-main"><div class="s-title">{esc(t['display_title'])}</div><div class="s-meta"><a class="nct" href="{esc(trial_url)}" target="_blank" rel="noopener">{esc(t.get('id'))}</a><span class="chip chip-ph">{esc('/'.join(t.get('phases') or []) or 'Phase N/A')}</span><span class="chip chip-mech">{esc(m['label_zh' if zh else 'label_en'])}</span><span class="chip chip-access">{esc(access)}</span><span class="chip chip-verdict">{esc(verdict)}</span></div></div><span class="caret">\u25be</span></summary><div class="body"><p>{esc(t['efficacy_context'])}</p>{development_html}<h4>{T(chr(20837)+chr(25490)+chr(26680)+chr(23545),'Eligibility review')}</h4><ul>{lis}</ul><h4>{T(chr(39118)+chr(38505)+chr(32972)+chr(26223),'Risk context')}</h4><ul>{risk_html}</ul><div class="next"><b>{T(chr(19979)+chr(19968)+chr(27493),'Next step')} \u00b7 </b>{esc(access)}</div></div></details>""")
   item_word=T(chr(39033),"items")
   sections.append(f"""<section class="mechanism-group"><div class="banner {banner_style[category]}"><div class="num">{section_index:02d}</div><div class="bmeta"><div class="beyebrow">Treatment mechanism</div><div class="btitle">{esc(m['label_zh' if zh else 'label_en'])}</div></div><div class="cnt" data-item-word="{esc(item_word)}">{len(items)} {item_word}</div></div><div class="tier-desc">{esc(category_desc[category])}</div>{''.join(cards)}</section>""")
  c=p["counts"]; delta=p.get("portal_delta") or {}; geo=p.get("geography_audit") or {}
@@ -88,8 +180,12 @@ def render_html(p: dict[str, Any], path: Path) -> None:
  css="""
 :root{--bg:#fafaf7;--surface:#fff;--alt:#f3f3ef;--border:#d9d8d1;--text:#20211f;--muted:#666963;--brand:#173d5a;--wine:#7b263e;--green:#245c43;--amber:#8e5d0b}*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:15px/1.6 Arial,'Microsoft YaHei',sans-serif}.wrap{max-width:900px;margin:auto;padding:24px 18px 80px}.hero{background:#173d5a;color:white;padding:27px;border-radius:8px}.hero .eyebrow{font-size:11px;text-transform:uppercase;opacity:.8}.hero h1{margin:6px 0 12px;font-size:27px}.snap{display:flex;flex-wrap:wrap;gap:7px}.snap span{border:1px solid #ffffff44;background:#ffffff16;padding:3px 9px;font-size:12px}.disc{margin:13px 0;padding:11px 14px;background:#fff2d9;border-left:4px solid var(--amber)}.overview{background:white;border:1px solid var(--border);padding:16px;margin:12px 0}.ov-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:8px}.ov-cell{background:var(--alt);padding:10px;text-align:center}.ov-cell b{display:block;color:var(--brand);font-size:23px}.filters{display:flex;gap:7px;flex-wrap:wrap;margin:14px 0}.filters button{border:1px solid var(--border);background:white;padding:6px 12px;cursor:pointer}.filters button.on{background:var(--brand);color:white}.banner{display:flex;align-items:center;gap:13px;color:white;padding:14px 16px;border-radius:7px;margin:25px 0 8px}.num{border:1px solid #ffffff88;border-radius:50%;width:40px;height:40px;display:grid;place-items:center}.bmeta{flex:1}.beyebrow{font-size:10px;text-transform:uppercase;opacity:.8}.btitle{font-size:18px;font-weight:700}.cnt{font-size:12px}.b-target{background:#74243d}.b-pathway{background:#183f5d}.b-immune{background:#315e50}.b-cell{background:#5c4072}.b-basket{background:#73552d}.b-marker{background:#526472}.b-other{background:#62625e}.tier-desc{font-size:12px;color:var(--muted);margin:0 2px 9px}details{background:white;border:1px solid var(--border);border-left:4px solid var(--amber);margin:7px 0}details.match{border-left-color:var(--green)}details.exclude{border-left-color:#888}summary{display:flex;gap:10px;padding:12px;cursor:pointer;list-style:none}.tier-dot{width:8px;height:8px;border-radius:50%;background:var(--amber);margin-top:7px}.match .tier-dot{background:var(--green)}.exclude .tier-dot{background:#888}.s-main{flex:1;min-width:0}.s-title{font-weight:700;overflow-wrap:anywhere}.s-meta{display:flex;flex-wrap:wrap;gap:5px;margin-top:6px}.chip,.nct{font-size:10.5px;padding:2px 7px;background:var(--alt);border-radius:5px}.nct{color:var(--brand);padding-left:0;background:none}.body{padding:0 16px 14px 31px}.body h4{font-size:11px;text-transform:uppercase;margin:10px 0 3px}.body ul{margin:0 0 5px;padding-left:19px}.evidence-list li{margin-bottom:9px}.evidence-list div{color:var(--muted);font-size:12px}.next{background:var(--alt);border-left:3px solid var(--wine);padding:8px 10px;margin-top:9px}.is-hidden{display:none!important}footer{margin-top:32px;border-top:1px solid var(--border);padding-top:12px;font-size:11px;color:var(--muted)}@media(max-width:650px){.wrap{padding:12px}.ov-grid{grid-template-columns:1fr 1fr}}
 """
- buttons=[("all",T("\u5168\u90e8","All"))]+access_defs
- filters="".join(f'<button class="{"on" if key=="all" else ""}" data-filter="{key}">{esc(label)}</button>' for key,label in buttons)
+ buttons=[
+  ("actionable",T("\u5f85\u6838\u5b9e\u5019\u9009","Candidates to verify")),
+  ("all",T("\u5168\u90e8","All")),
+  ("excluded",T("\u5df2\u6392\u9664","Excluded")),
+ ]+access_defs
+ filters="".join(f'<button class="{"on" if key=="actionable" else ""}" data-filter="{key}">{esc(label)}</button>' for key,label in buttons)
  overview=[(len(trials),T("\u5019\u9009\u8bd5\u9a8c","Candidates")),(geo.get("domestic_named",0),T("\u56fd\u5185\u53ef\u53ca","In-country access")),(geo.get("country_unverified",0)+geo.get("domestic_registry",0),T("\u56fd\u5bb6\u8bb0\u5f55\u5f85\u6838\u5b9e","Country unverified")),(geo.get("overseas",0),T("\u5883\u5916","Overseas"))]
  ov="".join(f'<div class="ov-cell"><b>{n}</b><span>{esc(label)}</span></div>' for n,label in overview)
  manifest=p.get("run_manifest") or {}; mc=manifest.get("counts") or {}
@@ -101,10 +197,11 @@ def render_html(p: dict[str, Any], path: Path) -> None:
   (T("\u6df1\u5ea6\u5206\u6790","Deep analysis"),mc.get("deep_completed",0)),
   (T("\u9057\u6f0f","Omitted"),mc.get("omitted",0))]
  manifest_html=f'<section class="overview"><h3>{esc(manifest_title)}</h3><div class="ov-grid">{"".join(f"<div class=ov-cell><b>{esc(value)}</b><span>{esc(label)}</span></div>" for label,value in manifest_rows)}</div><p class="manifest-hash">prepared SHA-256: {esc(manifest.get("prepared_sha256"))}<br>analysis SHA-256: {esc(manifest.get("analysis_sha256"))}</p></section>'
- script="""function applyFilter(f){document.querySelectorAll('.mechanism-group').forEach(g=>{g.querySelectorAll('details.trial').forEach(x=>x.classList.toggle('is-hidden',f!=='all'&&x.dataset.access!==f));const n=g.querySelectorAll('details.trial:not(.is-hidden)').length;g.classList.toggle('is-hidden',n===0);const c=g.querySelector('.cnt');c.textContent=n+' '+c.dataset.itemWord;});}document.querySelectorAll('.filters button').forEach(b=>b.addEventListener('click',()=>{document.querySelectorAll('.filters button').forEach(x=>x.classList.remove('on'));b.classList.add('on');applyFilter(b.dataset.filter);}));"""
+ decision_html=decision_report_html(p,zh)
+ script="""function applyFilter(f){document.querySelectorAll('.mechanism-group').forEach(g=>{g.querySelectorAll('details.trial').forEach(x=>{let hide=false;if(f==='actionable')hide=x.dataset.verdict==='exclude';else if(f==='excluded')hide=x.dataset.verdict!=='exclude';else if(f!=='all')hide=x.dataset.access!==f;x.classList.toggle('is-hidden',hide);});const n=g.querySelectorAll('details.trial:not(.is-hidden)').length;g.classList.toggle('is-hidden',n===0);const c=g.querySelector('.cnt');c.textContent=n+' '+c.dataset.itemWord;});}document.querySelectorAll('.filters button').forEach(b=>b.addEventListener('click',()=>{document.querySelectorAll('.filters button').forEach(x=>x.classList.remove('on'));b.classList.add('on');applyFilter(b.dataset.filter);}));applyFilter('actionable');"""
  eyebrow=T(chr(20020)+chr(24202)+chr(35797)+chr(39564)+chr(21305)+chr(37197)+chr(25253)+chr(21578)+" · "+chr(24739)+chr(32773)+chr(29256),"Clinical trial matching report · Patient edition")
  database_label=T(chr(25968)+chr(25454)+chr(24211)+chr(26356)+chr(26032)+chr(26102)+chr(38388),"Database as of")
- doc=f"""<!doctype html><html lang="{p['language']}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>{esc(title)} \u00b7 {esc(patient.get('patient_id'))}</title><style>{css}</style></head><body><main class="wrap"><header class="hero"><div class="eyebrow">{eyebrow}</div><h1>{esc(title)}</h1><div class="snap"><span>{esc(patient.get('patient_id'))}</span><span>{esc(patient.get('cancer_type'))} \u00b7 {esc(patient.get('stage'))}</span><span>{esc(' / '.join(patient.get('mutations') or []))}</span><span>{esc(loc)}</span></div></header><div class="disc">{esc(disclaimer)}</div>{f'<div class="disc">{esc(validation_notice)}</div>' if validation_notice else ''}<section class="overview"><div class="ov-grid">{ov}</div></section>{manifest_html}<div class="filters">{filters}</div>{''.join(sections)}<footer>{database_label}: {esc(p['database_as_of'])} \u00b7 MCP schema {esc(p['database_metadata'].get('schema_version'))} \u00b7 WHO portal delta: {esc(delta.get('status'))}, {esc(delta.get('returned') or 0)} trial(s)</footer></main><script>{script}</script></body></html>"""
+ doc=f"""<!doctype html><html lang="{p['language']}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>{esc(title)} \u00b7 {esc(patient.get('patient_id'))}</title><style>{css}</style></head><body><main class="wrap"><header class="hero"><div class="eyebrow">{eyebrow}</div><h1>{esc(title)}</h1><div class="snap"><span>{esc(patient.get('patient_id'))}</span><span>{esc(patient.get('cancer_type'))} \u00b7 {esc(patient.get('stage'))}</span><span>{esc(' / '.join(patient.get('mutations') or []))}</span><span>{esc(loc)}</span></div></header><div class="disc">{esc(disclaimer)}</div>{f'<div class="disc">{esc(validation_notice)}</div>' if validation_notice else ''}<section class="overview"><div class="ov-grid">{ov}</div></section>{manifest_html}{decision_html}<div class="filters">{filters}</div>{''.join(sections)}<footer>{database_label}: {esc(p['database_as_of'])} \u00b7 MCP schema {esc(p['database_metadata'].get('schema_version'))} \u00b7 WHO portal delta: {esc(delta.get('status'))}, {esc(delta.get('returned') if delta.get('returned') is not None else 0)} trial(s)</footer></main><script>{script}</script></body></html>"""
  path.write_text(doc,encoding="utf-8")
 
 

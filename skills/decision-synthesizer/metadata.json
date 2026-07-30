@@ -1,9 +1,0 @@
-{
-  "version": "2.0.0",
-  "organization": "CancerDAO",
-  "date": "May 2026",
-  "abstract": "Synthesizes per-trial gating + risk + efficacy into a Top-N decision report with diversity bucketing, Goals-of-Care trigger using effective treatment line, patient internal-consistency flags, and cross-validation that risk narratives are cancer-grounded and efficacy class baselines match patient mutation. Final synthesis stage of the clinical-trial-matching pipeline.",
-  "references": [
-    "https://github.com/CancerDAO/clinical-trial-matching-skill"
-  ]
-}

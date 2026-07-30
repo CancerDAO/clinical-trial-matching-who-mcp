@@ -5,8 +5,8 @@ validation artifacts and must never be delivered as patient reports.
 
 ```bash
 python skills/clinical-trial-matching-who-mcp/scripts/pipeline/full_pipeline.py prepare \
-  --patient examples/patient.json \
-  --plan examples/search-plan.json \
+  --patient skills/clinical-trial-matching-who-mcp/examples/SYNTHETIC-CN-CRC-KRAS-G12C-patient.json \
+  --plan skills/clinical-trial-matching-who-mcp/examples/SYNTHETIC-CN-CRC-KRAS-G12C-search-plan.json \
   --prefilter-limit 12 \
   --analysis-limit 8 \
   --out test-artifacts/subset-run

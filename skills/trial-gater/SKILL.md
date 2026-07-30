@@ -34,7 +34,9 @@ Clinical eligibility is judgment, not pattern matching. This subskill makes that
         "exclusion": ["criterion 1", "criterion 2", ...],
         "raw": "..."
       },
-      "china_sites": [...]
+      "patient_country_sites": [...],
+      "patient_country_site_count": 0,
+      "country_assessment": {...}
     }
   ],
   "patient": { /* see clinical-trial-matching SKILL.md Step 1 schema */ }
@@ -47,7 +49,7 @@ For each trial, emit a JSON object per `rules/output-gating-verdict-schema.md`. 
 
 ```json
 {
-  "results": [
+  "analyzed_trials": [
     { "trial_id": "NCT...", ...verdict... },
     ...
   ]
@@ -82,7 +84,7 @@ For each trial, emit a JSON object per `rules/output-gating-verdict-schema.md`. 
    - conditional: any inclusion is borderline/unknown OR any exclusion is borderline/unknown OR any R1-R5 trigger
    - exclude: any inclusion fails OR any exclusion is triggered (hard exclusion)
 
-7. 5. Output the per-criterion table + verdict + rationale.
+7. Output the per-criterion table, verdict, and rationale.
 ```
 
 ## Hard rules (must apply)

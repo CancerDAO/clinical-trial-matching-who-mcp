@@ -9,12 +9,12 @@ This skill changes the retrieval and registry-verification boundary. It does not
 
 ## Non-negotiable architecture
 
-`patient structure + original eight-dimensional plan` -> `real WHO MCP + automatic WHO registration-date delta` -> `one verifier/deduplicator` -> `direct-registry live status verification` -> `registry-status exclusion + generic structured hard-rule triage` -> `deterministic all-batch model executor` -> `trial-gater for every remaining trial` -> `risk/efficacy/evidence only for match or conditional` -> `decision-synthesizer` -> `mechanism classifier` -> `one patient-report renderer`.
+`patient structure + original eight-dimensional plan` -> `real WHO MCP + optional authorized WHO registration-date delta` -> `one verifier/deduplicator` -> `direct-registry live status verification` -> `registry-status exclusion + generic structured hard-rule triage` -> `deterministic all-batch model executor` -> `trial-gater for every remaining trial` -> `risk/efficacy/evidence only for match or conditional` -> `decision-synthesizer` -> `mechanism classifier` -> `one patient-report renderer`.
 
 A formal report has two executable stages separated by model work:
 
-1. `full_pipeline.py prepare` calls the MCP server, reads its watermark, runs the complete search plan against the public WHO advanced-search portal, merges the registration-date delta, calls `get_trial`, deduplicates, attempts direct-registry status verification, applies conservative deterministic exclusions, and writes `analysis_jobs.json`.
-2. `run_formal_pipeline.py execute` enumerates every unfinished batch and invokes the configured `MODEL_BATCH_RUNNER_JSON` command. It validates exact ID coverage, retries failures, resumes existing valid outputs, creates deep jobs only after complete gating, and runs the decision skill once after complete deep analysis.
+1. `full_pipeline.py prepare` calls the MCP server, reads its watermark, optionally validates an authorized portal delta, calls `get_trial`, deduplicates, attempts direct-registry status verification, applies conservative deterministic exclusions, and writes `analysis_jobs.json`. Portal crawling is off unless explicitly selected by the operator.
+2. `run_formal_pipeline.py execute` enumerates every unfinished batch and invokes the selected API, agent-CLI, or custom command backend. It validates exact ID coverage, retries failures, resumes existing valid outputs, creates deep jobs only after complete gating, and runs the decision skill once after complete deep analysis.
 3. `full_pipeline.py finalize` validates every subskill contract and renders only after complete coverage. It rejects heuristic/example analysis and missing trial outputs.
 
 The canonical subskills are sibling directories, without `-who-mcp` forks:
@@ -28,6 +28,13 @@ The canonical subskills are sibling directories, without `-who-mcp` forks:
 
 Preserve the original structured patient fields, including cancer type, stage, biomarkers, molecular variants, treatment lines, current treatment, prior therapies/classes, performance status, organ function, comorbidities, country, city, travel willingness and affordability.
 
+`--patient` accepts either the legacy flat patient JSON or a Cancer Buddy
+`patients/<patient_code>/` directory. Directory inputs are normalized by
+`patient_input.py` into `normalized-patient.json`. Structured diagnosis comes
+from `patient_summary.json`; variants and biomarkers come from `molecular.json`.
+Never infer country from locale, filenames, or hospitals. Cancer Buddy input
+therefore requires an explicit `matching_context.json`.
+
 The search plan must contain all original dimensions:
 
 1. disease plus exact biomarker;
@@ -37,15 +44,23 @@ The search plan must contain all original dimensions:
 5. named approved/investigational agents;
 6. cell and biologic therapy;
 7. immune strategies;
-8. Chinese-registry terms.
+8. patient-country and relevant regional registry terms.
 
 Do not filter the first-pass recall by patient country.
+Every formal query must include a biomarker, mechanism, intervention, drug, or
+modality anchor. Before execution, the transport compiles `condition + term`
+into one conjunctive MCP FTS query. Patient-disease-only queries are rejected
+because they expand cost without demonstrating patient-specific relevance.
 
 ## MCP retrieval and verification
 
 Use the real stdio MCP tools `database_metadata`, `execute_search_plan`, and `get_trial`. Persist `database_as_of`, MCP protocol/server metadata, query audit, pagination and truncation fields.
 
-`who_mcp_verifier.py` is the only final deduplication authority. It uses canonical primary/secondary registry IDs, normalized CTIS IDs and strict protocol-core identifiers. Title similarity is never sufficient for deduplication.
+`who_mcp_verifier.py` is the only final deduplication authority. It uses
+canonical registry IDs, WHO universal trial numbers, and normalized CTIS IDs
+with transitive-set merging. Generic secondary protocol strings, shared titles,
+interventions, and sponsors are never sufficient for automatic merging; such
+lookalikes remain separate and receive an auditable possible-duplicate flag.
 
 Keep named sites separate from country-only records. A national registry ID may be displayed under in-country access, but the card must state that a named center is unverified. A model may summarize location evidence; it may not invent a center.
 
@@ -60,7 +75,7 @@ For every candidate that passes conservative structured hard rules, `trial-gater
 
 - `trial-gater` evaluates criterion by criterion and applies R1-R5.
 - `trial-risk-annotator` grounds every risk in mechanism × patient cancer × patient state.
-- The trial-efficacy-contextualizer performs an auditable publication search for every non-excluded trial, supplies a development evidence chain plus applicable efficacy evidence, or explicitly records no_relevant_publication/no_data; it must not transfer another cancer or mutation baseline without a caveat.
+- The deterministic publication prefetch searches Europe PMC for every non-excluded trial. The trial-efficacy-contextualizer assesses candidate applicability and limitations. `evidence_grounding.py` rejects publications outside the prefetched candidate set and restores citation identity and URLs from source records.
 - `decision-synthesizer` runs after all per-trial outputs and may not promote an excluded trial.
 
 The analysis bundle must use schema `clinical-subskills-analysis-v1` and provenance `mode=llm_subskills`. See `scripts/pipeline/analysis_contract.py`. A missing/invalid bundle is a hard stop, not a reason to fall back to deterministic clinical heuristics.
@@ -89,13 +104,23 @@ python scripts/pipeline/run_formal_pipeline.py prepare `
   --mcp-python python --mcp-server server.py --run-dir run
 ```
 
-Configure one model runner command. It must read the JSON input path and write
-strict JSON to the output path:
+Choose exactly one execution backend. For a remote API, select a provider and
+model; the bundled runner embeds the referenced subskill instructions:
 
 ```powershell
-$env:MODEL_BATCH_RUNNER_JSON='["python","model_runner.py","--input","{input}","--output","{output}"]'
-python scripts/pipeline/run_formal_pipeline.py execute --run-dir run --model MODEL_NAME
+$env:MODEL_EXECUTION_BACKEND="api"
+$env:MODEL_PROVIDER="openai"
+$env:MODEL_NAME="gpt-5"
+$env:OPENAI_API_KEY=Read-Host "OpenAI API key"
+python scripts/pipeline/run_formal_pipeline.py execute --run-dir run
 ```
+
+Provider presets are `openai`, `anthropic`, `glm`, and `minimax`. Other
+providers use `MODEL_PROVIDER=openai-compatible` with `MODEL_BASE_URL`,
+`MODEL_API_KEY`, and any model identifier accepted by that endpoint. Local
+agent CLIs use `MODEL_EXECUTION_BACKEND=cli` and
+`MODEL_AGENT_COMMAND_JSON`. Custom runners use
+`MODEL_EXECUTION_BACKEND=custom` and `MODEL_BATCH_RUNNER_JSON`.
 
 The manual `deep-jobs`, `merge`, and `finalize` commands remain available for
 diagnosis, but formal testing should use `execute` so the model cannot choose a
@@ -136,9 +161,10 @@ summary without patient trial cards. It does not emit `report.html`.
 
 1. every recalled trial has a hard-rule or gater disposition, every non-excluded trial has complete deep analysis, and there are no budget omissions;
 2. neither global nor per-query MCP retrieval is truncated;
-3. data freshness is level A or B: level A has a current WHO portal delta; level B
-   permits a database snapshot within `WHO_MCP_DATABASE_MAX_AGE_HOURS` when every
-   recalled candidate received a direct-registry verification attempt. Level C is
-   validation-only.
+3. data freshness is level A or B: level A has a current WHO portal delta and a
+   complete direct-registry audit; level B permits a database snapshot within
+   `WHO_MCP_DATABASE_MAX_AGE_HOURS` and still requires the complete direct-registry
+   audit. A portal delta never substitutes for recruitment-status verification.
+   Level C is validation-only.
 
 The jobs contract carries target_language. Patient-facing rationale, eligibility, risk and efficacy narratives must be written in that language.

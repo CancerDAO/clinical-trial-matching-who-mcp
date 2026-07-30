@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import hashlib
 import html
 import http.cookiejar
 import json
@@ -103,15 +104,18 @@ class WhoPortalClient:
             "ctl00$ContentPlaceHolder1$ddlRecruitingStatus": "1",
             "ctl00$ContentPlaceHolder1$txtDateStart": date_start,
             "ctl00$ContentPlaceHolder1$txtDateEnd": date_end,
-            "ctl00$ContentPlaceHolder1$ddlPageSize": "100",
             "ctl00$ContentPlaceHolder1$btnSearch": "Search",
             "ctl00$ContentPlaceHolder1$postbacktextbox": "Advanced",
             "ctl00$ContentPlaceHolder1$postbacktextbox1": "True",
         })
         result = self._open(ADVANCED, urllib.parse.urlencode(form).encode())
+        if re.search(r"NoAccess\.aspx|Error Page|application error|access denied", result, re.I):
+            raise RuntimeError("WHO portal returned an application or access error page")
         parsed = _FormParser()
         parsed.feed(result)
         count_match = re.search(r"(\d+)\s+records?\s+for\s+\d+\s+trials?\s+found", result, re.I)
+        if count_match is None and not parsed.trial_ids:
+            raise RuntimeError("WHO portal response contained neither a result count nor trial IDs")
         total = int(count_match.group(1)) if count_match else len(parsed.trial_ids)
         if total > len(set(parsed.trial_ids)):
             raise RuntimeError(
@@ -162,9 +166,7 @@ class WhoPortalClient:
                 "inclusion": [inclusion] if inclusion else [],
                 "exclusion": [exclusion] if exclusion else [],
                 "raw": "\n".join(part for part in (inclusion, exclusion) if part),
-                "minimum_age": value("Label8"),
-                "maximum_age": value("Label11"),
-                "sex": value("Label12"),
+                "structured_demographics_status": "not_parsed_from_positional_portal_labels",
             },
             "portal_record_url": url,
         }
@@ -229,11 +231,20 @@ def build_delta(
             date_end=date_end,
         )
         ids.extend(found)
-        audit.append({**variant, "returned": len(found), "portal_total": total, "complete": True})
+        audit.append({
+            **variant,
+            "returned": len(found),
+            "portal_total": total,
+            "complete": len(found) == total,
+        })
     unique_ids = list(dict.fromkeys(ids))
     trials = [client.trial(trial_id) for trial_id in unique_ids]
     return {
         "schema_version": "who-portal-delta-v1",
+        "generator": "who_portal_delta.py",
+        "search_plan_sha256": hashlib.sha256(
+            json.dumps(plan, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        ).hexdigest(),
         "status": "executed",
         "database_as_of": database_as_of,
         "executed_at": now.isoformat(timespec="seconds"),

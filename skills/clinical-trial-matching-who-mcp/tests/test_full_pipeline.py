@@ -65,70 +65,6 @@ def valid_analysis(trial_id: str, cancer: str) -> dict:
 
 
 class GenericPipelineContractTests(unittest.TestCase):
-    def test_level_b_freshness_rejects_excessive_registry_errors(self):
-        prepared = {
-            "database_as_of": dt.datetime.now().astimezone().isoformat(),
-            "all_verified_trials": [{"id": f"T{i}"} for i in range(4)],
-            "portal_delta": {"status": "not_executed"},
-            "live_registry_audit": {
-                "attempted": 4, "errors": 2, "complete": True,
-            },
-        }
-        with mock.patch.dict(os.environ, {"LIVE_REGISTRY_MAX_ERROR_RATE": "0.25"}):
-            self.assertFalse(
-                pipeline.data_freshness_assessment(prepared)["formal_freshness_ready"]
-            )
-        prepared["live_registry_audit"]["errors"] = 1
-        with mock.patch.dict(os.environ, {"LIVE_REGISTRY_MAX_ERROR_RATE": "0.25"}):
-            assessment = pipeline.data_freshness_assessment(prepared)
-        self.assertTrue(assessment["formal_freshness_ready"])
-        self.assertEqual(assessment["level"], "B")
-
-    def test_auto_portal_delta_is_persisted_in_run_directory(self):
-        mcp_payload = {
-            "transport": "streamable_http_mcp_jsonrpc",
-            "server_tools": ["database_metadata", "execute_search_plan", "get_trial"],
-            "metadata": {"database_as_of": "2026-07-23T00:00:00+00:00"},
-            "search": {
-                "results": [],
-                "search_stats": {
-                    "global_truncated": False, "query_truncation_count": 0
-                },
-                "query_audit": [],
-            },
-            "details": [],
-        }
-        delta = {
-            "schema_version": "who-portal-delta-v1",
-            "status": "executed",
-            "database_as_of": "2026-07-23T00:00:00+00:00",
-            "executed_at": dt.datetime.now().astimezone().isoformat(),
-            "source": "WHO ICTRP public advanced search portal",
-            "date_start": "23/07/2026",
-            "date_end": "27/07/2026",
-            "query_audit": [],
-            "control_query": {"complete": True},
-            "trials": [],
-        }
-        with tempfile.TemporaryDirectory() as temp:
-            root = Path(temp)
-            patient = root / "patient.json"
-            plan = root / "plan.json"
-            patient.write_text('{"country":"China"}', encoding="utf-8")
-            plan.write_text('{"keyword_groups":[]}', encoding="utf-8")
-            with mock.patch.object(pipeline, "validate_search_plan", return_value=[]), \
-                 mock.patch.object(pipeline, "run_remote_who_workflow", return_value=mcp_payload), \
-                 mock.patch.object(pipeline, "build_delta", return_value=delta):
-                pipeline.prepare(
-                    patient_path=patient, plan_path=plan, out_dir=root / "run",
-                    mcp_transport="streamable-http", mcp_url="https://example.test/mcp",
-                    mcp_api_key="test", portal_delta_mode="auto",
-                )
-            persisted = json.loads(
-                (root / "run" / "portal_delta.json").read_text(encoding="utf-8")
-            )
-        self.assertEqual(persisted["schema_version"], "who-portal-delta-v1")
-
     def test_prepare_reads_mcp_configuration_from_environment(self):
         fake_result = {
             "transport": "stdio_mcp_jsonrpc",
@@ -219,8 +155,14 @@ class GenericPipelineContractTests(unittest.TestCase):
         with self.assertRaisesRegex(AnalysisContractError, "development_evidence"):
             validate_analysis_bundle(bundle, patient, ["NCT-EVIDENCE"])
     def test_same_contract_accepts_multiple_cancer_types(self):
-        for cancer in ("NSCLC", "HER2-positive breast cancer", "pancreatic adenocarcinoma"):
-            item = valid_analysis("TRIAL-" + cancer[:3], cancer)
+        for cancer, context in (
+            ("NSCLC", "NSCLC"),
+            ("HER2-positive breast cancer", "HER2-positive breast cancer"),
+            ("pancreatic adenocarcinoma", "pancreatic adenocarcinoma"),
+            ("gastric cancer", "胃癌"),
+            ("cholangiocarcinoma", "胆管癌"),
+        ):
+            item = valid_analysis("TRIAL-" + cancer[:3], context)
             bundle = {
                 "schema_version": "clinical-subskills-analysis-v1",
                 "analysis_provenance": {"mode": "llm_subskills", "model": "gpt", "completed_at": "2026-07-16", "output_language": "en"},
@@ -236,6 +178,9 @@ class GenericPipelineContractTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             path = Path(temp) / "delta.json"
             path.write_text(json.dumps({
+                "schema_version": "who-portal-delta-v1",
+                "generator": "who_portal_delta.py",
+                "search_plan_sha256": "0" * 64,
                 "status": "executed",
                 "database_as_of": "2026-07-08T00:00:00+00:00",
                 "executed_at": dt.datetime.now().astimezone().isoformat(),
@@ -250,6 +195,9 @@ class GenericPipelineContractTests(unittest.TestCase):
             path = Path(temp) / "delta.json"
             stale = dt.datetime.now().astimezone() - dt.timedelta(hours=25)
             path.write_text(json.dumps({
+                "schema_version": "who-portal-delta-v1",
+                "generator": "who_portal_delta.py",
+                "search_plan_sha256": "0" * 64,
                 "status": "executed",
                 "database_as_of": watermark,
                 "executed_at": stale.isoformat(),
@@ -257,15 +205,47 @@ class GenericPipelineContractTests(unittest.TestCase):
             }), encoding="utf-8")
             with self.assertRaisesRegex(ValueError, "not current"):
                 pipeline._load_portal_delta(path, watermark)
+
+    def test_portal_delta_rejects_future_execution_beyond_clock_skew(self):
+        watermark = "2026-07-09T00:45:35+00:00"
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "delta.json"
+            future = dt.datetime.now().astimezone() + dt.timedelta(minutes=10)
+            path.write_text(json.dumps({
+                "schema_version": "who-portal-delta-v1",
+                "generator": "who_portal_delta.py",
+                "search_plan_sha256": "0" * 64,
+                "status": "executed",
+                "database_as_of": watermark,
+                "executed_at": future.isoformat(),
+                "trials": [],
+            }), encoding="utf-8")
+            with mock.patch.dict(os.environ, {"WHO_PORTAL_CLOCK_SKEW_MINUTES": "5"}):
+                with self.assertRaisesRegex(ValueError, "not current"):
+                    pipeline._load_portal_delta(path, watermark)
+
+    def test_portal_clock_skew_configuration_is_bounded(self):
+        with mock.patch.dict(os.environ, {"WHO_PORTAL_CLOCK_SKEW_MINUTES": "61"}):
+            with self.assertRaisesRegex(ValueError, "between 0 and 60"):
+                pipeline._portal_clock_skew_minutes()
+
     def test_portal_delta_contract_accepts_auditable_trials(self):
         watermark = "2026-07-09T00:45:35+00:00"
         with tempfile.TemporaryDirectory() as temp:
             path = Path(temp) / "delta.json"
             path.write_text(json.dumps({
+                "schema_version": "who-portal-delta-v1",
+                "generator": "who_portal_delta.py",
+                "search_plan_sha256": "0" * 64,
                 "status": "executed",
                 "database_as_of": watermark,
                 "executed_at": dt.datetime.now().astimezone().isoformat(),
                 "source": "WHO ICTRP portal",
+                "query_audit": [{
+                    "label": "control", "returned": 1, "portal_total": 1,
+                    "complete": True,
+                }],
+                "control_query": {"query_variants": 1, "complete": True},
                 "trials": [{"id": "NCT99999999", "title": "A new basket trial"}],
             }), encoding="utf-8")
             trials, audit = pipeline._load_portal_delta(path, watermark)
@@ -289,9 +269,117 @@ class GenericPipelineContractTests(unittest.TestCase):
         prepared.update({
             "analysis_scope": "complete",
             "retrieval_complete": True,
-            "portal_delta": {"status": "executed", "executed_at": dt.datetime.now().astimezone().isoformat()},
+            "portal_delta": {
+                "status": "executed",
+                "executed_at": dt.datetime.now().astimezone().isoformat(),
+                "query_audit": [{"returned": 0, "portal_total": 0, "complete": True}],
+                "control_query": {"query_variants": 1, "complete": True},
+            },
+            "live_registry_audit": {
+                "attempted": 2, "complete": True, "unknown": 0, "errors": 0,
+            },
         })
         self.assertTrue(all(pipeline.report_quality_gates(prepared, 2).values()))
+
+    def test_empty_or_unidentified_recall_cannot_be_formal(self):
+        common = {
+            "analysis_scope": "complete", "retrieval_complete": True,
+            "portal_delta": {
+                "status": "executed",
+                "executed_at": dt.datetime.now().astimezone().isoformat(),
+                "query_audit": [{"returned": 0, "portal_total": 0, "complete": True}],
+                "control_query": {"query_variants": 1, "complete": True},
+            },
+            "live_registry_audit": {
+                "attempted": 0, "complete": True, "unknown": 0, "errors": 0,
+            },
+        }
+        self.assertFalse(pipeline.report_quality_gates({
+            **common, "all_verified_trials": [],
+        }, 0)["complete_analysis"])
+        self.assertFalse(pipeline.report_quality_gates({
+            **common, "all_verified_trials": [{"id": ""}],
+        }, 1)["complete_analysis"])
+
+    def test_all_unknown_live_registry_results_fail_freshness(self):
+        prepared = {
+            "all_verified_trials": [{"id": "T1"}, {"id": "T2"}],
+            "database_as_of": dt.datetime.now().astimezone().isoformat(),
+            "portal_delta": {"status": "not_executed"},
+            "live_registry_audit": {
+                "attempted": 2, "complete": True, "unknown": 2, "errors": 0,
+            },
+        }
+        self.assertFalse(pipeline.data_freshness_assessment(prepared)["formal_freshness_ready"])
+
+    def test_staged_quality_gate_uses_audited_workload_counts(self):
+        prepared = {
+            "analysis_workflow": "gater_then_deep_analysis",
+            "all_verified_trials": [{"id": f"T{index}"} for index in range(6)],
+            "analysis_candidate_ids": ["T1", "T2"],
+            "hard_excluded_trials": [{"id": "T3"}],
+            "analysis_scope": "staged_complete",
+            "preanalysis_filter": {"budget_omitted_count": 0},
+            "retrieval_complete": True,
+            "portal_delta": {
+                "status": "executed",
+                "executed_at": dt.datetime.now().astimezone().isoformat(),
+                "query_audit": [{"returned": 0, "portal_total": 0, "complete": True}],
+                "control_query": {"query_variants": 1, "complete": True},
+            },
+            "live_registry_audit": {
+                "attempted": 6, "complete": True, "unknown": 0, "errors": 0,
+            },
+        }
+        self.assertTrue(all(pipeline.report_quality_gates(prepared, 3).values()))
+        prepared["analysis_scope"] = "validation_subset"
+        self.assertFalse(pipeline.report_quality_gates(prepared, 3)["complete_analysis"])
+
+    def test_coverage_audit_rejects_top_n_gater_subset(self):
+        prepared = {
+            "all_verified_trials": [{"id": "T1"}, {"id": "T2"}, {"id": "T3"}],
+            "hard_excluded_trials": [{"id": "T3"}],
+        }
+        by_id = {
+            "T1": {
+                "gating": {"verdict": "match"},
+                "risk_annotation": {},
+                "efficacy_context": {
+                    "evidence_search": {},
+                    "development_evidence": [],
+                },
+            },
+        }
+        audit = pipeline.analysis_coverage_audit(prepared, by_id)
+        self.assertFalse(audit["disposition_equation_valid"])
+        self.assertEqual(audit["missing_disposition_ids"], ["T2"])
+        self.assertEqual(audit["omitted_count"], 1)
+
+    def test_coverage_audit_requires_equal_deep_analysis_sets(self):
+        prepared = {
+            "all_verified_trials": [{"id": "T1"}, {"id": "T2"}],
+            "hard_excluded_trials": [],
+        }
+        by_id = {
+            "T1": {
+                "gating": {"verdict": "match"},
+                "risk_annotation": {},
+                "efficacy_context": {
+                    "evidence_search": {},
+                    "development_evidence": [],
+                },
+            },
+            "T2": {
+                "gating": {"verdict": "conditional"},
+                "risk_annotation": {},
+            },
+        }
+        audit = pipeline.analysis_coverage_audit(prepared, by_id)
+        self.assertTrue(audit["disposition_equation_valid"])
+        self.assertFalse(audit["deep_analysis_equations_valid"])
+        self.assertEqual(audit["missing_efficacy_ids"], ["T2"])
+        self.assertEqual(audit["missing_evidence_ids"], ["T2"])
+
     def test_candidate_selection_is_mechanism_diverse_not_disease_coded(self):
         trials = []
         for index, category in enumerate(("targeted_therapy", "immune_combination", "cell_and_biologic", "other")):
@@ -335,28 +423,36 @@ class GenericPipelineContractTests(unittest.TestCase):
         selected, audit = pipeline.deterministic_prefilter(trials, 4)
         self.assertEqual(len(selected), 4)
         self.assertTrue(all(trial["overall_status"] == "RECRUITING" for trial in selected))
-        self.assertEqual(audit["inactive_or_unknown_omitted_count"], 2)
-        self.assertEqual(audit["budget_omitted_count"], 2)
+        self.assertEqual(audit["inactive_or_unknown_omitted_count"], 0)
+        self.assertEqual(audit["budget_omitted_count"], 4)
         prepared = {
             "all_verified_trials": trials,
             "prefiltered_trials": selected,
             "analysis_scope": "prefilter_complete",
             "retrieval_complete": True,
-            "portal_delta": {"freshness_validated_at_prepare": True},
+            "portal_delta": {
+                "status": "executed",
+                "executed_at": dt.datetime.now().astimezone().isoformat(),
+                "query_audit": [{"returned": 0, "portal_total": 0, "complete": True}],
+                "control_query": {"query_variants": 1, "complete": True},
+            },
+            "live_registry_audit": {
+                "attempted": 8, "complete": True, "unknown": 0, "errors": 0,
+            },
             "preanalysis_filter": {"budget_omitted_count": 0},
         }
         self.assertTrue(all(pipeline.report_quality_gates(prepared, 4).values()))
         prepared["preanalysis_filter"]["budget_omitted_count"] = 2
         self.assertFalse(pipeline.report_quality_gates(prepared, 4)["complete_analysis"])
 
-    def test_portal_freshness_is_frozen_after_prepare_validation(self):
+    def test_portal_freshness_is_rechecked_at_finalize(self):
         audit = {
             "status": "executed",
             "executed_at": "2020-01-01T00:00:00+00:00",
             "freshness_validated_at_prepare": True,
             "max_age_hours": 24,
         }
-        self.assertTrue(pipeline._portal_audit_is_current(audit))
+        self.assertFalse(pipeline._portal_audit_is_current(audit))
 
 class TextNormalizationTests(unittest.TestCase):
     def test_repairs_strict_utf8_as_latin1_mojibake(self):
@@ -378,7 +474,16 @@ class RegistryBoundaryTests(unittest.TestCase):
             {"found": True, "trial_uid": "a", "primary_registry_id": "CTRI/1", "title": "T", "registry_ids": trials[0]["registry_ids"], "sites": [], "parsed_criteria": {"raw": "x"}},
             {"found": True, "trial_uid": "b", "primary_registry_id": "CTIS-X", "title": "T", "registry_ids": trials[1]["registry_ids"], "sites": [], "parsed_criteria": {"raw": "x"}},
         ]
-        self.assertEqual(len(verify_batch(trials, details, patient)), 1)
+        self.assertEqual(len(verify_batch(trials, details, patient)), 2)
+
+    def test_explicit_registry_id_bridge_deduplicates_transitively(self):
+        patient = {"country": "China"}
+        trials = [
+            {"id": "A", "registry_ids": ["CTIS2024-123456-11-00"]},
+            {"id": "C", "registry_ids": ["NCT00000003"]},
+            {"id": "B", "registry_ids": ["CTIS2024-123456-11", "NCT00000003"]},
+        ]
+        self.assertEqual(len(verify_batch(trials, [], patient)), 1)
 
     def test_registry_titles_country_evidence_and_links_are_presentation_only(self):
         ctis = {

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 import tempfile
 import unittest
@@ -18,39 +19,52 @@ from html_renderer import render_validation_html
 
 
 class FormalPipelineStateTests(unittest.TestCase):
-    def test_execute_command_advances_all_stages_without_model_selected_subset(self):
-        with tempfile.TemporaryDirectory() as temp:
-            run_dir = Path(temp)
-            patient = run_dir / "patient.json"
-            patient.write_text('{"country":"China"}', encoding="utf-8")
-            base = {
-                "patient_path": str(patient),
-                "gater_jobs_path": str(run_dir / "analysis_jobs.json"),
-                "gater_batch_dir": str(run_dir / "gater-batches"),
-                "deep_jobs_path": str(run_dir / "deep_jobs.json"),
-                "deep_batch_dir": str(run_dir / "deep-batches"),
-            }
-            states = [
-                {**base, "stage": "gater_pending"},
-                {**base, "stage": "deep_pending"},
-                {**base, "stage": "analysis_merged"},
-            ]
-            with mock.patch.object(formal, "_load_state", side_effect=states), \
-                 mock.patch.object(formal, "execute_batches") as batches, \
-                 mock.patch.object(formal, "create_formal_deep_jobs") as deep_jobs, \
-                 mock.patch.object(formal, "collect_trials", return_value=([], [])), \
-                 mock.patch.object(formal, "execute_decision") as decision, \
-                 mock.patch.object(formal, "merge_formal") as merge, \
-                 mock.patch.object(formal, "finalize_formal", return_value={"stage": "formal_complete"}) as finalize:
-                result = formal.execute_formal(
-                    run_dir, model="test-model", timeout=30, retries=1
-                )
-            self.assertEqual(batches.call_count, 2)
-            deep_jobs.assert_called_once_with(run_dir)
-            decision.assert_called_once()
-            merge.assert_called_once()
-            finalize.assert_called_once_with(run_dir)
-            self.assertEqual(result["stage"], "formal_complete")
+    def test_decision_input_keeps_all_non_excluded_candidates_in_compact_form(self):
+        gating = [
+            {
+                "trial_id": "KEEP",
+                "gating": {
+                    "verdict": "conditional", "confidence": 0.8,
+                    "blockers_satisfied": [], "blockers_failed": [],
+                    "blockers_pending": ["lab"], "hard_rules_triggered": [],
+                    "rationale": "candidate",
+                },
+            },
+            {
+                "trial_id": "DROP",
+                "gating": {
+                    "verdict": "exclude", "confidence": 0.9,
+                    "blockers_satisfied": [], "blockers_failed": ["wrong cancer"],
+                    "blockers_pending": [], "hard_rules_triggered": [],
+                    "rationale": "excluded",
+                },
+            },
+        ]
+        deep = [{
+            **gating[0],
+            "risk_annotation": {
+                "trial_mechanisms_identified": ["target"],
+                "risks": [],
+            },
+            "efficacy_context": {
+                "efficacy_snapshot": {
+                    "match_type": "no_data", "applies_because": "early trial",
+                },
+                "vs_soc": {"available": False},
+                "development_evidence": [],
+            },
+        }]
+        jobs = {"batches": [{"trials": [{"id": "KEEP", "title": "Keep trial"}]}]}
+        result = formal._decision_input(gating, deep, jobs)
+        self.assertEqual(result["analysis_metadata"]["candidate_count"], 1)
+        self.assertEqual(
+            result["analysis_metadata"]["match_inventory_size"],
+            {"match": 0, "conditional": 1, "exclude": 1},
+        )
+        self.assertEqual(
+            [item["trial_id"] for item in result["analyzed_trials"]], ["KEEP"]
+        )
+        self.assertNotIn("risk_annotation", result["analyzed_trials"][0])
 
     def test_prepare_rejects_reused_run_directory(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -95,6 +109,20 @@ class FormalPipelineStateTests(unittest.TestCase):
             self.assertEqual(state["stage"], "gater_pending")
             self.assertEqual(state["recall_count"], 2)
 
+    def test_prepare_requires_explicit_external_registry_authorization(self):
+        with tempfile.TemporaryDirectory() as temp:
+            args = argparse.Namespace(
+                run_dir=str(Path(temp) / "run"),
+                portal_delta_mode="auto",
+                skip_live_registry_verification=False,
+                authorize_external_registry_access=False,
+            )
+            with mock.patch.dict(
+                os.environ, {"EXTERNAL_REGISTRY_ACCESS_AUTHORIZED": "0"}
+            ):
+                with self.assertRaisesRegex(ValueError, "explicit operator authorization"):
+                    formal.prepare_formal(args)
+
     def test_finalize_cannot_skip_merge_stage(self):
         with tempfile.TemporaryDirectory() as temp:
             run_dir = Path(temp)
@@ -104,6 +132,28 @@ class FormalPipelineStateTests(unittest.TestCase):
             })
             with self.assertRaisesRegex(ValueError, "not allowed"):
                 formal.finalize_formal(run_dir)
+
+    def test_refresh_freshness_rejects_delta_with_new_trials(self):
+        with tempfile.TemporaryDirectory() as temp:
+            run_dir = Path(temp)
+            prepared = run_dir / "prepared.json"
+            prepared.write_text(json.dumps({
+                "database_as_of": "2026-07-23T00:00:00+00:00",
+            }), encoding="utf-8")
+            formal._save_state(run_dir, {
+                "schema_version": "formal-pipeline-state-v1",
+                "stage": "validation_failed",
+                "prepared_path": str(prepared),
+            })
+            with mock.patch.object(
+                formal, "_load_portal_delta",
+                return_value=([{"id": "NEW"}], {"status": "executed"}),
+            ):
+                with self.assertRaisesRegex(ValueError, "contains new trials"):
+                    formal.refresh_formal_freshness(
+                        run_dir, run_dir / "portal_delta.json"
+                    )
+            self.assertEqual(formal._load_state(run_dir)["stage"], "validation_failed")
 
     def test_deep_status_requires_exact_id_set(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -120,6 +170,42 @@ class FormalPipelineStateTests(unittest.TestCase):
             audit = formal._deep_status(jobs, batches)
             self.assertFalse(audit["complete"])
             self.assertEqual(audit["missing"], ["T2"])
+
+    def test_deep_jobs_requires_gater_stage_not_whole_workflow_completion(self):
+        with tempfile.TemporaryDirectory() as temp:
+            run_dir = Path(temp)
+            state = {
+                "schema_version": "formal-pipeline-state-v1",
+                "stage": "gater_pending",
+                "gater_jobs_path": str(run_dir / "analysis_jobs.json"),
+                "gater_batch_dir": str(run_dir / "gater-batches"),
+                "patient_path": str(run_dir / "patient.json"),
+                "deep_jobs_path": str(run_dir / "deep_jobs.json"),
+                "deep_batch_dir": str(run_dir / "deep-batches"),
+            }
+            formal._save_state(run_dir, state)
+            staged_status = {
+                "complete": False,
+                "stages": {
+                    "gater": {
+                        "expected": 185,
+                        "completed": 185,
+                        "missing": [],
+                        "unexpected": [],
+                        "errors": [],
+                        "complete": True,
+                    },
+                    "deep": {"expected": 104, "completed": 0, "complete": False},
+                },
+            }
+            with (
+                mock.patch.object(formal, "status", return_value=staged_status),
+                mock.patch.object(formal, "create_deep_jobs", return_value={"trials": 104}) as create,
+            ):
+                result = formal.create_formal_deep_jobs(run_dir)
+        self.assertEqual(result["stage"], "deep_pending")
+        self.assertEqual(result["deep_expected_count"], 104)
+        create.assert_called_once()
 
 
 class ValidationRendererTests(unittest.TestCase):

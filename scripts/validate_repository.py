@@ -9,11 +9,17 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 SKILLS_DIR = ROOT / "skills"
 CONFLICT_MARKERS = ("<<<<<<<", "=======", ">>>>>>>")
-IGNORED_PARTS = {".git", "__pycache__", ".pytest_cache"}
+IGNORED_PARTS = {
+    ".git", "__pycache__", ".pytest_cache", ".venv", "node_modules",
+    "production-runs", "test-artifacts",
+}
 FORBIDDEN_SUFFIXES = {".pyc", ".db", ".sqlite", ".sqlite3"}
 NAME_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 LINK_RE = re.compile(r"\[[^\]]+\]\(([^)]+)\)")
 PUBLIC_FRONTMATTER_FIELDS = {"name", "description"}
+REQUIRED_ROOT_FILES = {
+    "LICENSE", "NOTICE.md", "README.md", "SECURITY.md", ".gitattributes",
+}
 
 
 def repository_files() -> list[Path]:
@@ -42,6 +48,10 @@ def parse_frontmatter(path: Path) -> dict[str, str]:
 def validate() -> list[str]:
     errors: list[str] = []
     files = repository_files()
+
+    for name in sorted(REQUIRED_ROOT_FILES):
+        if not (ROOT / name).is_file():
+            errors.append(f"required repository file is missing: {name}")
 
     for path in files:
         rel = path.relative_to(ROOT).as_posix()

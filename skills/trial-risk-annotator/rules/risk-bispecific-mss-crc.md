@@ -1,11 +1,19 @@
 # Risk profile: Bispecific antibody in MSS CRC
 
+## Authoritative classification correction
+
+- Tarlatamab is a DLL3 x CD3 T-cell engager developed for DLL3-positive
+  neuroendocrine cancers. It is not an anti-CTLA-4 x anti-PD-1 bispecific and
+  must not be used as a CRC checkpoint-bispecific example.
+- Cadonilimab (AK104) is an example of an anti-PD-1 x anti-CTLA-4 bispecific.
+- If a later line conflicts with this correction, this section controls.
+
 MSS (microsatellite stable) CRC is the immune-cold majority of metastatic CRC and historically responds poorly to single-agent PD-1/PD-L1 inhibitors. Bispecifics — particularly T-cell engagers — are a emerging strategy.
 
 ## Drugs / classes in this space
 
 - **Anti-PD-1 × anti-VEGF bispecific**: ivonescimab (AK112) — has data in NSCLC, expanding to CRC
-- **Anti-CTLA-4 × anti-PD-1 bispecific**: tarlatamab-style architectures
+- **Anti-CTLA-4 × anti-PD-1 bispecific**: cadonilimab (AK104)-type architectures
 - **CEA × CD3 BiTE**: cibisatamab (RG7802) — exploratory in mCRC
 - **DLL3 × CD3**: not CRC-relevant
 - **TIGIT bispecifics**: emerging
@@ -25,7 +33,7 @@ MSS (microsatellite stable) CRC is the immune-cold majority of metastatic CRC an
 
 ## Patient-specific considerations
 
-For our SYNTHETIC-CRC-LATER-LINE example (KRAS G12C MSS mCRC with prior PD-1 and anti-VEGF exposure):
+For a KRAS G12C MSS mCRC patient with prior PD-1 and anti-VEGF exposure:
 - Bispecific anti-PD-1 × anti-VEGF would be redundant with prior treatment classes — unlikely to qualify as differentiated path
 - Bispecific CEA × CD3 — novel mechanism, not previously exposed, but ORR data sparse in CRC
 - If trial requires PD-1 naive, R1 will trigger from prior camrelizumab

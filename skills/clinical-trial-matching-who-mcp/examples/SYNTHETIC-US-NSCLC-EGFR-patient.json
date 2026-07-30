@@ -1,5 +1,6 @@
 {
   "patient_id": "SYNTHETIC-US-NSCLC-EGFR",
+  "age": 67,
   "country": "United States",
   "city": "Boston",
   "patient_location": "Boston, Massachusetts",
@@ -34,6 +35,10 @@
     }
   ],
   "ecog": 1,
+  "kps": 80,
+  "comorbidities": [
+    "controlled hypertension"
+  ],
   "organ_function": "adequate",
   "willing_to_travel_domestic": true,
   "willing_to_travel_internationally": false,

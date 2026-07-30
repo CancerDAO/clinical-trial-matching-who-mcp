@@ -36,6 +36,27 @@ class RerenderPipelineTests(unittest.TestCase):
         self.assertNotIn("Computed Tomography", refreshed["trials"][0]["display_title"])
         self.assertTrue(refreshed["presentation_provenance"]["clinical_analysis_preserved"])
 
+    def test_rerender_preserves_efficacy_informed_mechanism_classification(self):
+        payload = {
+            "formal_report_ready": False,
+            "patient": {
+                "patient_id": "SYNTHETIC-2", "country": "United States",
+                "cancer_type": "solid tumor", "mutations": [],
+            },
+            "trials": [{
+                "id": "T2", "title": "Advanced solid tumor basket study",
+                "interventions": [], "gating": {"verdict": "conditional"},
+                "efficacy_context_detail": {
+                    "summary": "The administered intervention is an oncolytic virus therapy."
+                },
+            }],
+        }
+        refreshed = refresh_presentational_fields(payload)
+        self.assertEqual(
+            refreshed["trials"][0]["mechanism_category"]["category"],
+            "cell_and_biologic",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

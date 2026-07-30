@@ -1,43 +1,29 @@
-# Third-Party Attributions
+# Notices and data-source terms
 
-This repository builds on the following upstream projects. We gratefully
-acknowledge their authors.
+This repository is maintained by CancerDAO and distributed under the MIT
+License in `LICENSE`.
 
-## NCBI TrialGPT (conceptual lineage only)
+## Specifications and protocols
 
-- Upstream: https://github.com/ncbi-nlp/TrialGPT
-- License: U.S. Government Work / Public Domain
-- Scope: earlier versions of this repository vendored NCBI's Python
-  package under `repo/trialgpt_matching/`, `repo/trialgpt_ranking/`,
-  and `repo/trialgpt_retrieval/keyword_generation.py` plus
-  `hybrid_fusion_retrieval.py`. Those modules called Azure OpenAI
-  directly and were never invoked by this skill's workflow (Claude
-  performs all LLM reasoning in the conversation), so the directories
-  and files were removed; the remaining retrieval code (now under
-  `repo/retrieval/`) is CancerDAO-original. The 8-dimension keyword
-  strategy and criterion-level evaluation pattern are conceptually
-  inspired by the NCBI paper.
-- Suggested citation if you build on this work:
+- The skill layout follows the Agent Skills conventions used by
+  `vercel-labs/skills`.
+- MCP clients and servers use the Model Context Protocol. Those specifications
+  and implementations retain their respective copyrights and licenses.
 
-  > Qiao Jin, Zifeng Wang, Charalampos S. Floudas, Fangyuan Chen, Changlin
-  > Gong, Dara Bracken-Clarke, Elisabetta Xue, Yifan Yang, Jimeng Sun,
-  > Zhiyong Lu. *Matching Patients to Clinical Trials with Large Language
-  > Models.*
+## External clinical-trial data
 
-## WHO ICTRP and source registries
+The repository does not grant rights to clinical-trial records, registry
+pages, abstracts, publications, or other third-party content retrieved at
+runtime. Operators must comply with the terms, access policies, attribution
+requirements, and privacy rules of WHO ICTRP and each primary registry or
+publication service they enable.
 
-- Role: clinical-trial records are queried through the separately deployed WHO ICTRP MCP database.
-- Registry records retain their original registry identifiers and source URLs. WHO ICTRP and source registries remain authoritative for record content; this repository does not vendor their services or datasets.
-- The former direct `chictr-mcp-server` runtime is not used by this parallel WHO MCP build.
-## CancerDAO Enhancements
+Generated databases, patient inputs, model responses, publication caches, and
+reports are runtime artifacts and are not part of the MIT-licensed source
+distribution.
 
-The following additions are contributed by CancerDAO and released under the
-MIT license (see `LICENSE`):
+## Clinical use
 
-- WHO MCP search-plan normalization and source merging (`scripts/retrieval/who_mcp_adapter.py`)
-  — pure stdlib, no LLM client, no external Python dependencies.
-- Self-contained deterministic HTML report renderer (`scripts/render/html_renderer.py`).
-- The `SKILL.md` skill definition: 8-dimension keyword strategy,
-  criterion-level chain-of-thought evaluation, hard grading rules (R1–R5),
-  three-stage verification pipeline, compliance guardrails, and the Chinese
-  clinical workflow.
+Registry and publication records may be incomplete, delayed, or inconsistent.
+Outputs are for trial discovery and professional pre-screening. They do not
+replace confirmation by the recruiting study centre or clinical judgment.

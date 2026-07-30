@@ -6,6 +6,7 @@ This module only estimates operational feasibility for the patient's location.
 from __future__ import annotations
 
 import datetime as dt
+import re
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
@@ -125,7 +126,8 @@ def _intervention_text(trial: dict) -> str:
 def score_time_cost(trial: dict, patient: dict) -> tuple[float, list[str]]:
     flags: list[str] = []
     text = _intervention_text(trial)
-    cell = any(term in text for term in ("car-t", "car t", "tcr-t", "tcr t", "til ", "cell therapy"))
+    cell = any(term in text for term in ("car-t", "tcr-t", "tcr t", "til therapy", "cell therapy"))
+    cell = cell or bool(re.search(r"\bcar[\s-]+t\b", text))
     base = 0.9
     if cell:
         base = 0.5

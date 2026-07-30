@@ -59,9 +59,13 @@ def main() -> None:
             f"{(completed.stderr or completed.stdout)[-1000:]}"
         )
     payload = _json_payload(completed.stdout)
-    Path(args.output).write_text(
+    output = Path(args.output)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    temporary = output.with_name(f".{output.name}.{os.getpid()}.tmp")
+    temporary.write_text(
         json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
     )
+    temporary.replace(output)
 
 
 if __name__ == "__main__":
