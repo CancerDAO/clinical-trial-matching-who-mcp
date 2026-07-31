@@ -13,8 +13,9 @@ PIPELINE = Path(__file__).resolve().parents[1] / "scripts" / "pipeline"
 sys.path.insert(0, str(PIPELINE))
 
 from model_batch_executor import (
-    _retry_runner_failure, _validate_batch_output, _validate_decision_output,
-    execute_batches, execute_decision,
+    BatchContractError, _execute_one_batch, _retry_runner_failure,
+    _validate_batch_output, _validate_decision_output, execute_batches,
+    execute_decision,
 )
 from run_formal_pipeline import _execution_lock
 
@@ -651,6 +652,30 @@ class ModelBatchRecoveryTests(unittest.TestCase):
         self.assertFalse(_should_split_batch(RuntimeError("Model API HTTP 401")))
         self.assertFalse(_should_split_batch(RuntimeError("Model API connection failed")))
         self.assertTrue(_should_split_batch(RuntimeError("gating confidence must be 0..1")))
+        self.assertTrue(_should_split_batch(
+            BatchContractError("NCT1: risk applies_because is required")
+        ))
+
+    def test_batch_contract_error_recovers_as_single_trials(self) -> None:
+        batch = {
+            "batch_id": "clinical-deep-031",
+            "stage": "deep",
+            "trials": [{"id": "NCT1"}, {"id": "NCT2"}],
+        }
+        error = BatchContractError("NCT1: risk applies_because is required")
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            with patch(
+                "model_batch_executor._run_envelope", side_effect=error
+            ), patch(
+                "model_batch_executor._recover_as_single_trials"
+            ) as recover:
+                outcome = _execute_one_batch(
+                    {"stage": "deep"}, batch, root / "outputs",
+                    root / "inputs", "deep-batch", retries=0, timeout=20,
+                )
+        self.assertEqual(outcome, "recovered")
+        recover.assert_called_once()
 
     def test_api_transport_exhaustion_is_not_retried_by_batch_layer(self) -> None:
         self.assertFalse(_retry_runner_failure(

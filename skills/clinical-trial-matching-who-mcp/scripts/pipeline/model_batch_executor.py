@@ -596,7 +596,7 @@ def _should_split_batch(error: Exception) -> bool:
         return False
     recoverable = (
         "must be", "missing", "mismatch", "invalid", "truncated",
-        "incomplete", "did not return", "json", "trial id coverage",
+        "incomplete", "did not return", "json", "trial id coverage", "required",
     )
     return any(marker in text for marker in recoverable)
 
@@ -627,7 +627,7 @@ def _execute_one_batch(
             validator=lambda path, item=batch: _validate_batch_output(item, path),
             retry_contract_errors=len(batch.get("trials") or []) <= 1,
         )
-    except RuntimeError as exc:
+    except (RuntimeError, BatchContractError) as exc:
         if len(batch.get("trials") or []) <= 1 or not _should_split_batch(exc):
             raise
         _recover_as_single_trials(
