@@ -184,8 +184,12 @@ def build_analysis_jobs(
             "trials": batch,
             "required_execution_order": ["trial-gater"],
             "output_schema": SCHEMA_VERSION,
-            "target_language": target_language,
-            "language_instruction": "Write all patient-facing eligibility narratives in target_language.",
+            "target_language": "structured",
+            "report_language": target_language,
+            "language_instruction": (
+                "Emit compact language-neutral eligibility structure. Use verdict/status codes, "
+                "criterion facts, blockers, and a minimal factual rationale; do not write report prose."
+            ),
         })
     return {
         "schema_version": JOBS_SCHEMA_VERSION,
@@ -208,6 +212,9 @@ def build_analysis_jobs(
             "runs_after_all_batches": True,
             "input": "patient + analyzed_trials",
             "target_language": target_language,
+            "language_instruction": (
+                "Write every patient-facing decision narrative directly in target_language."
+            ),
         },
         "guardrail": "A formal report must not be generated until an LLM subskill analysis bundle passes validation.",
     }

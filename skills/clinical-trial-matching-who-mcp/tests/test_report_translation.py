@@ -8,7 +8,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts" / "render"))
 
 from report_translation import (
-    apply_units, collect_units, contains_narrative_language, needs_translation,
+    apply_cached_residual_translations, apply_units, collect_units, contains_narrative_language, needs_translation,
     mask_protected_facts, prepare_translation_work, protected_facts,
     maybe_translate_report, restore_protected_facts, translate_batch_resilient,
     translation_batches, translation_batch_limits,
@@ -26,6 +26,11 @@ class ReportTranslationTests(unittest.TestCase):
         self.assertTrue(result["formal_report_ready"])
         self.assertEqual(result["language"], "zh-CN")
         self.assertIn("NCT06385925", result["trials"][0]["gating"]["rationale"])
+        self.assertEqual(
+            result["translation_provenance"]["strategy"],
+            "native_zh_deep_decision_then_residual_translation",
+        )
+        self.assertEqual(result["translation_provenance"]["detected_residual_units"], 1)
 
     def test_translation_that_drops_protected_fact_is_ignored(self):
         payload = {"trials": [{"gating": {"rationale": "NCT06385925 matches KRAS G12D."}}]}
@@ -143,11 +148,42 @@ class ReportTranslationTests(unittest.TestCase):
         runner.assert_called_once()
         self.assertEqual(result["language"], "en")
 
-    def test_required_translation_rejects_missing_api_configuration(self):
-        payload = {"patient": {"country": "CN"}, "language": "zh-CN"}
+    def test_required_translation_rejects_missing_api_only_when_residual_exists(self):
+        payload = {
+            "patient": {"country": "CN"}, "language": "zh-CN",
+            "decision_report": {"summary": "Confirm eligibility with the study center."},
+        }
         with mock.patch.dict(os.environ, {"TRANSLATION_MODE": "required"}, clear=True):
             with self.assertRaisesRegex(ValueError, "requires"):
                 maybe_translate_report(payload, cache_path=Path("translation-cache.json"))
+
+    def test_required_translation_needs_no_api_when_no_residual_exists(self):
+        payload = {"patient": {"country": "CN"}, "language": "zh-CN"}
+        with mock.patch.dict(os.environ, {"TRANSLATION_MODE": "required"}, clear=True):
+            result = maybe_translate_report(payload, cache_path=Path("translation-cache.json"))
+        self.assertEqual(result["translation_provenance"]["remaining_units"], 0)
+
+    def test_complete_cache_avoids_translation_api(self):
+        payload = {
+            "patient": {"country": "China"},
+            "trials": [{"gating": {"rationale": "Confirm KRAS G12D status."}}],
+        }
+        units = collect_units(payload)
+        with self.subTest(units=units):
+            self.assertEqual(len(units), 1)
+        from tempfile import TemporaryDirectory
+        with TemporaryDirectory() as folder:
+            cache = Path(folder) / "translations.json"
+            cache.write_text(
+                __import__("json").dumps({units[0]["id"]: "确认 KRAS G12D 状态。"}),
+                encoding="utf-8",
+            )
+            result, pending = apply_cached_residual_translations(payload, cache_path=cache)
+            self.assertEqual(pending, 0)
+            self.assertEqual(result["translation_provenance"]["mode"], "residual_translation_cache")
+            with mock.patch.dict(os.environ, {"TRANSLATION_MODE": "required"}, clear=True):
+                final = maybe_translate_report(payload, cache_path=cache)
+            self.assertEqual(final["trials"][0]["gating"]["rationale"], "确认 KRAS G12D 状态。")
 
     def test_translation_batches_respect_character_budget(self):
         units = [

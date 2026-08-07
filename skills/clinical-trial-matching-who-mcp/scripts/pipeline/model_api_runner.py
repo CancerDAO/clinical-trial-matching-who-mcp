@@ -226,6 +226,7 @@ def build_prompt(envelope: dict[str, Any]) -> str:
     expected_ids = (envelope.get("required_output") or {}).get("expected_trial_ids")
     if expected_ids:
         stage = str((envelope.get("job") or {}).get("stage") or "").strip()
+        target_language = str((envelope.get("job") or {}).get("target_language") or "").strip()
         prompt += (
             "\n\n--- FINAL OUTPUT CONTRACT (HIGHEST PRIORITY) ---\n"
             "Return exactly one object whose top-level key is analyzed_trials. "
@@ -245,6 +246,19 @@ def build_prompt(envelope: dict[str, Any]) -> str:
                 "For development evidence, copy only the selected candidate URL and write findings, "
                 "applicability, and limitations; the executor supplies citation and search metadata."
             )
+        if stage == "gater":
+            prompt += (
+                " Keep eligibility output compact and structural: use required verdict/status values, "
+                "criterion facts, blockers, and only the minimum factual rationale needed for audit. "
+                "Do not produce polished report prose."
+            )
+        elif target_language == "zh-CN":
+            prompt += (
+                " All patient-facing narrative strings MUST be written directly in Simplified Chinese. "
+                "Keep registry identifiers, drug names, biomarkers, numbers, citations, and URLs unchanged."
+            )
+        elif target_language == "en":
+            prompt += " All patient-facing narrative strings MUST be written in English."
     maximum = _env_int("MODEL_MAX_INPUT_CHARS", 500_000)
     if len(prompt) > maximum:
         raise ValueError(
