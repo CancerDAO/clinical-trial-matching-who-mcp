@@ -101,6 +101,24 @@ class ModelApiRunnerTests(unittest.TestCase):
         )
         self.assertNotIn("trial-risk-annotator/output", prompt)
         self.assertNotIn("trial-risk-annotator output schema", prompt)
+        self.assertIn("Do not produce polished report prose", prompt)
+
+    def test_chinese_deep_prompt_promotes_language_to_final_contract(self) -> None:
+        skills_root = Path(__file__).resolve().parents[2]
+        envelope = {
+            "skill_paths": {
+                name: str(skills_root / name / "SKILL.md")
+                for name in ("trial-risk-annotator", "trial-efficacy-contextualizer")
+            },
+            "job": {
+                "stage": "deep", "target_language": "zh-CN",
+                "required_execution_order": ["trial-risk-annotator", "trial-efficacy-contextualizer"],
+                "patient": {}, "trials": [{"id": "NCT1"}],
+            },
+            "required_output": {"expected_trial_ids": ["NCT1"]},
+        }
+        prompt = model_api_runner.build_prompt(envelope)
+        self.assertIn("MUST be written directly in Simplified Chinese", prompt)
 
     def test_deep_prompt_loads_only_applicable_risk_rules(self) -> None:
         skills_root = Path(__file__).resolve().parents[2]

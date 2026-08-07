@@ -167,6 +167,7 @@ def translation_batch_limits(_model: str = "") -> tuple[int, int]:
 
 
 def collect_units(payload: dict[str, Any]) -> list[dict[str, str]]:
+    """Collect only residual English prose after native-language generation."""
     units: list[dict[str, str]] = []
 
     def walk(value: Any, path: list[str], enabled: bool = False) -> None:
@@ -205,10 +206,13 @@ def apply_units(payload: dict[str, Any], units: list[dict[str, str]], translatio
         applied_units += 1
     result["language"] = "zh-CN"
     result["translation_provenance"] = {
-        "source_language": "en", "target_language": "zh-CN",
-        "mode": "post_analysis_translation",
+        "source_language": "mixed", "target_language": "zh-CN",
+        "mode": "residual_post_analysis_translation",
+        "strategy": "native_zh_deep_decision_then_residual_translation",
         "requested_units": len(units),
+        "detected_residual_units": len(units),
         "applied_units": applied_units,
+        "remaining_units": len(units) - applied_units,
     }
     return result
 
@@ -294,6 +298,26 @@ def translate_payload(
     return apply_units(payload, units, translations)
 
 
+def apply_cached_residual_translations(
+    payload: dict[str, Any], *, cache_path: Path,
+) -> tuple[dict[str, Any], int]:
+    """Apply valid cached units before deciding whether a model call is needed."""
+    units = collect_units(payload)
+    cached = (
+        json.loads(cache_path.read_text(encoding="utf-8"))
+        if cache_path.is_file() else {}
+    )
+    if not isinstance(cached, dict):
+        cached = {}
+    translated, pending, _ = prepare_translation_work(
+        units, {str(key): value for key, value in cached.items() if isinstance(value, str)},
+    )
+    result = apply_units(payload, units, translated)
+    result["translation_provenance"]["mode"] = "residual_translation_cache"
+    result["translation_provenance"]["remaining_units"] = len(pending)
+    return result, len(pending)
+
+
 def maybe_translate_report(
     payload: dict[str, Any], *, cache_path: Path,
 ) -> dict[str, Any]:
@@ -309,14 +333,21 @@ def maybe_translate_report(
         }
         return payload
     if not _translation_api_configured():
+        cached_payload, pending = apply_cached_residual_translations(
+            payload, cache_path=cache_path,
+        )
+        if pending == 0:
+            return cached_payload
         if mode == "required":
             raise ValueError(
                 "China report translation requires TRANSLATION_MODEL_PROVIDER or MODEL_PROVIDER"
             )
-        payload["translation_provenance"] = {
-            "target_language": "zh-CN", "mode": "skipped_no_model_api", "applied_units": 0,
-        }
-        return payload
+        cached_payload["translation_provenance"].update({
+            "target_language": "zh-CN", "mode": "partial_cache_no_model_api",
+            "strategy": "native_zh_deep_decision_then_residual_translation",
+            "remaining_units": pending,
+        })
+        return cached_payload
     return translate_payload(payload, cache_path=cache_path)
 
 

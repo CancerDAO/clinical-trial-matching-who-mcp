@@ -90,7 +90,7 @@ Feasibility remains operational and patient-relative. Geographic and financial d
 
 Use only `scripts/render/html_renderer.py`. The report follows the patient-triage layout, groups trials by mechanism and provides All / In-country access / Country record unverified / Overseas filters. Mechanism counts must update with the active filter.
 
-Patients whose explicit current country is China receive a Simplified Chinese report; all other countries receive an English report. Formal finalize automatically post-translates patient-facing narratives through the provider-neutral `TRANSLATION_MODEL_*` API configuration (or inherited `MODEL_*`). Translation never changes retrieval or clinical decisions. Use `TRANSLATION_MODE=required` when a China report must fail rather than continue without a configured translation API.
+Patients whose explicit current country is China receive a Simplified Chinese report; all other countries receive an English report. For China patients, deep and decision jobs must write patient-facing narratives directly in zh-CN. Formal finalize sends only residual English prose through the provider-neutral `TRANSLATION_MODEL_*` API configuration (or inherited `MODEL_*`). Translation never changes retrieval or clinical decisions. Use `TRANSLATION_MODE=required` when a China report must fail rather than continue with residual untranslated prose.
 
 ## Commands
 

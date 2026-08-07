@@ -116,6 +116,17 @@ class AnalysisBatchManagerTests(unittest.TestCase):
         self.assertTrue(all(
             batch["required_execution_order"] == ["trial-gater"] for batch in jobs["batches"]
         ))
+        self.assertTrue(all(batch["target_language"] == "structured" for batch in jobs["batches"]))
+
+    def test_china_deep_and_decision_jobs_request_native_chinese(self):
+        patient = {"country": "China", "cancer_type": "NSCLC"}
+        gater_jobs = build_analysis_jobs(patient, [{"id": "T1"}], ROOT.parent, batch_size=1)
+        self.assertEqual(gater_jobs["decision_job"]["target_language"], "zh-CN")
+        deep_jobs = build_deep_analysis_jobs(
+            patient, [{"id": "T1"}], [gating_item("T1", "conditional")],
+            ROOT.parent, batch_size=1,
+        )
+        self.assertEqual(deep_jobs["batches"][0]["target_language"], "zh-CN")
 
     def test_deep_jobs_are_created_only_for_match_and_conditional(self):
         jobs = build_deep_analysis_jobs(

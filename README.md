@@ -164,9 +164,9 @@ efficacy、evidence 和遗漏数量；存在集合遗漏时不会生成正式模
 ## 中文报告
 
 报告结构、筛选分栏和确定性标签会按患者语言渲染。若模型仍输出英文临床叙事，可以
-正式 `finalize` 根据患者明确的 `country` 自动选择报告语言：中国患者进入中文
-后翻译，其他国家患者直接生成英文报告。翻译只处理患者可见叙事，不重新进行检索、
-入排判断或临床决策。历史 `pipeline.json` 仍可手工执行后翻译：
+正式流程根据患者明确的 `country` 自动选择报告语言：中国患者的 Deep 与 Decision
+直接生成中文患者可见叙事，`finalize` 只补译残余英文；其他国家患者直接生成英文报告。
+补译不重新进行检索、入排判断或临床决策。历史 `pipeline.json` 仍可手工执行后翻译：
 
 ```bash
 python skills/clinical-trial-matching-who-mcp/scripts/render/report_translation.py \
@@ -221,6 +221,7 @@ python -m unittest discover \
 
 ## 文档
 
+- [USER_GUIDE_ZH.md](USER_GUIDE_ZH.md)：中文完整安装、MCP 接入与正式运行教程；
 - [ARCHITECTURE.md](ARCHITECTURE.md)：当前模块和数据流；
 - [MODEL_API_EXECUTION.md](MODEL_API_EXECUTION.md)：模型 API、并发与恢复配置；
 - [DEVELOPMENT_TESTING.md](DEVELOPMENT_TESTING.md)：开发与测试约定；

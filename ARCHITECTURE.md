@@ -18,7 +18,8 @@ Cancer Buddy archive or legacy patient JSON
 -> decision_grounding.py
 -> full_pipeline.py finalize
 -> country-based report language routing
--> provider-neutral patient-facing translation (China only)
+-> native zh-CN deep/decision narratives for China patients
+-> provider-neutral residual-English translation (China only)
 -> formal report + run manifest
 ```
 
