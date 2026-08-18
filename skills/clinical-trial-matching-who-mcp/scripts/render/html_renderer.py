@@ -5,6 +5,8 @@ import html
 import re
 from pathlib import Path
 from typing import Any
+
+from report_translation import patient_visible_evaluations
 from urllib.parse import urlsplit
 
 from mechanism_categories import CATEGORY_ORDER, classify_mechanism
@@ -206,7 +208,13 @@ def render_html(p: dict[str, Any], path: Path) -> None:
    else:access=T("\u60a3\u8005\u6240\u5728\u56fd\u5bb6\u6682\u65e0\u5730\u70b9\u8bc1\u636e","No location evidence in patient country")
    inactive_status=str(t.get("overall_status") or "").strip().upper().replace(" ","_") in {"ACTIVE_NOT_RECRUITING","COMPLETED","NO_LONGER_RECRUITING","NOT_RECRUITING","SUSPENDED","TERMINATED","WITHDRAWN"} or (t.get("registry_status_rule") or {}).get("rule_id")=="REGISTRY-INACTIVE"
    verdict=(T("\u5df2\u5173\u95ed\u62db\u52df","Recruitment closed") if inactive_status else {"match":T("\u9884\u5339\u914d","Potential match"),"conditional":T("\u9700\u786e\u8ba4","Conditional"),"exclude":T("\u4e0d\u7b26\u5408","Excluded")}[ga["verdict"]])
-   evidence=ga["satisfied"]+ga["pending"]+ga["exclusion_reasons"]
+   evaluations=[] if ga["verdict"]=="exclude" else patient_visible_evaluations(ga)
+   if ga["verdict"]=="exclude":
+    evidence=[t.get("patient_display_rationale") or ga.get("rationale") or (ga.get("exclusion_reasons") or [""])[0]]
+   elif evaluations:
+    evidence=[]
+   else:
+    evidence=ga["satisfied"]+ga["pending"]+ga["exclusion_reasons"]
    status_labels={"met":T("满足","Met"),"likely_met":T("初步满足","Likely met"),"unknown":T("需确认","Needs confirmation"),"needs_confirmation":T("需确认","Needs confirmation"),"potential_conflict":T("潜在冲突","Potential conflict"),"missing":T("登记数据缺失","Registry data missing")}
    status_labels = {
     "met": T("满足", "Met"),
@@ -216,7 +224,6 @@ def render_html(p: dict[str, Any], path: Path) -> None:
     "potential_conflict": T("潜在冲突", "Potential conflict"),
     "missing": T("信息缺失", "Information missing"),
    }
-   evaluations=(ga.get("inclusion_evaluation") or [])+(ga.get("exclusion_evaluation") or [])
    for item in evaluations:
     if isinstance(item,dict):
      evidence.append(f"[{status_labels.get(item.get('status'),item.get('status') or T('需确认','Needs confirmation'))}] {item.get('criterion','')} — {item.get('reason','')}")

@@ -66,6 +66,37 @@ class FormalPipelineStateTests(unittest.TestCase):
         )
         self.assertNotIn("risk_annotation", result["analyzed_trials"][0])
 
+    def test_decision_input_prefers_full_prepared_source_fields(self):
+        gating = [{
+            "trial_id": "NCT06385925",
+            "gating": {
+                "verdict": "conditional", "confidence": 0.75,
+                "blockers_satisfied": [], "blockers_failed": [],
+                "blockers_pending": ["washout"], "hard_rules_triggered": [],
+                "rationale": "candidate",
+            },
+        }]
+        deep = [{
+            **gating[0],
+            "risk_annotation": {"trial_mechanisms_identified": [], "risks": []},
+            "efficacy_context": {
+                "efficacy_snapshot": {"match_type": "no_data", "applies_because": "unknown"},
+                "vs_soc": {"available": False}, "development_evidence": [],
+            },
+        }]
+        compact_jobs = {"batches": [{"trials": [{"id": "NCT06385925"}]}]}
+        full_source = [{
+            "id": "NCT06385925", "patient_country_site_count": 16,
+            "country_assessment": {"class": "domestic_named"},
+            "feasibility": {"composite": 0.896, "sub_scores": {"geographic_access": 1.0}},
+        }]
+        result = formal._decision_input(gating, deep, compact_jobs, full_source)
+        candidate = result["analyzed_trials"][0]
+        self.assertEqual(candidate["patient_country_site_count"], 16)
+        self.assertEqual(candidate["country_assessment"]["class"], "domestic_named")
+        self.assertEqual(candidate["feasibility"]["composite"], 0.896)
+        self.assertEqual(candidate["gating"]["blockers_pending_count"], 1)
+
     def test_prepare_rejects_reused_run_directory(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)

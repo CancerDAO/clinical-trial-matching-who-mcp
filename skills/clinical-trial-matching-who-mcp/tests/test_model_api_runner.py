@@ -16,6 +16,29 @@ import model_batch_executor
 
 
 class ModelApiRunnerTests(unittest.TestCase):
+    def test_translation_reuses_decision_model_configuration(self) -> None:
+        with patch.dict(os.environ, {
+            "DECISION_MODEL_PROVIDER": "minimax",
+            "DECISION_MODEL_NAME": "MiniMax-M2.7",
+            "DECISION_MODEL_API_KEY": "secret",
+        }, clear=True):
+            provider, _, model, _, key = model_api_runner._configuration("translation")
+        self.assertEqual(provider, "minimax")
+        self.assertEqual(model, "MiniMax-M2.7")
+        self.assertEqual(key, "secret")
+
+    def test_local_env_file_does_not_override_process_environment(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            env_file = Path(folder) / ".env"
+            env_file.write_text(
+                "MODEL_PROVIDER=minimax\nMODEL_NAME=from-file\n",
+                encoding="utf-8",
+            )
+            with patch.dict(os.environ, {"MODEL_NAME": "from-shell"}, clear=True):
+                model_api_runner.load_env_file(env_file)
+                self.assertEqual(os.environ["MODEL_PROVIDER"], "minimax")
+                self.assertEqual(os.environ["MODEL_NAME"], "from-shell")
+
     def test_api_backend_is_selected_explicitly(self) -> None:
         with patch.dict(
             os.environ,

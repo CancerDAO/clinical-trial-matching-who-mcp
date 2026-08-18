@@ -158,6 +158,64 @@ python skills/clinical-trial-matching-who-mcp/scripts/pipeline/run_formal_pipeli
   status --run-dir /path/outside-repository/run
 ```
 
+可在正式检索前对各阶段模型执行一次低成本预检：
+
+```bash
+python skills/clinical-trial-matching-who-mcp/scripts/pipeline/run_formal_pipeline.py \
+  prepare --patient /path/patient.json --run-dir /path/run \
+  --model-preflight
+```
+
+预检分别验证 Gater、Deep、Decision 和 Translation 当前配置的连通性、JSON
+契约与必要的中文输出，并将成功路由写入运行目录的 `model-routing.json`。后续
+`execute` 会使用这份固定路由；文件不包含 API Key。该选项会产生每个已配置阶段
+一次很小的模型调用，因此默认不隐式启用。
+
+未指定具体模型时，可以从受控候选池自动选择：
+
+```bash
+export MODEL_PROVIDER=minimax
+export MINIMAX_API_KEY='...'
+export MODEL_CANDIDATES='fast-model,strong-model'
+python skills/clinical-trial-matching-who-mcp/scripts/pipeline/run_formal_pipeline.py \
+  prepare --patient /path/patient.json --run-dir /path/run \
+  --auto-select-models
+```
+
+阶段专用的 `GATER_MODEL_CANDIDATES`、`DEEP_MODEL_CANDIDATES`、
+`DECISION_MODEL_CANDIDATES` 和 `TRANSLATION_MODEL_CANDIDATES` 优先于通用候选池。
+项目为 OpenAI、Anthropic、MiniMax 和 GLM 提供最多两个模型的阶段默认池，按理论
+性价比排列；`openai-compatible` 不猜测私有模型名。Prepare 按顺序测试候选，首个
+通过立即选用，不再调用后续模型。只有没有内置池和用户候选池时才访问供应商
+`/models` 接口，并过滤明显的 embedding、rerank、图像和音频模型。Translation
+使用 10 条临床文本执行批量契约与吞吐测试。
+
+当前 MiniMax 默认池为 `MiniMax-M3 → MiniMax-M2.7`。M3 在当前账号的合成结构和
+10 条翻译基准中均通过，并显著快于 M2.7；高价 highspeed 型号不进入默认池，仍可由
+操作者通过 `*_MODEL_CANDIDATES` 显式加入。内置池带有复核日期，生产环境应定期结合
+供应商模型下线和价格变化更新。
+`MODEL_SELECTION_MAX_CANDIDATES` 和 `MODEL_SELECTION_MAX_CALLS` 控制
+选型费用。该过程只使用合成提示，不发送患者信息。
+路由审计同时记录 `estimated_minutes_per_100k_characters`，按配置并发和保守的
+70% 并发效率估算；这是容量规划指标，不是临床质量分数或硬门禁。
+
+同一 MiniMax API 下也可以在 Prepare 命令中直接指定阶段模型：
+
+```bash
+export MINIMAX_API_KEY='...'
+python skills/clinical-trial-matching-who-mcp/scripts/pipeline/run_formal_pipeline.py \
+  prepare --patient /path/patient.json --run-dir /path/run \
+  --model-provider minimax \
+  --model-base-url 'https://api.minimaxi.com/v1' \
+  --gater-model '<fast-json-model>' \
+  --deep-model '<reasoning-model>' \
+  --decision-model '<reasoning-model>' \
+  --translation-model '<fast-non-reasoning-model>'
+```
+
+任一阶段模型参数都会自动触发预检。模型名称以账户实际可用列表为准；项目不把
+MiniMax 或其他供应商的具体型号写死在代码中。
+
 正式报告只由 `finalize` 路径生成。运行清单会记录召回、硬排除、gater、deep、risk、
 efficacy、evidence 和遗漏数量；存在集合遗漏时不会生成正式模板。
 
@@ -181,15 +239,19 @@ python skills/clinical-trial-matching-who-mcp/scripts/render/rerender_pipeline.p
 
 翻译模块保留试验 ID、药物名、生物标志物、数值、引用和 URL。它不绑定任何厂商
 或模型：`TRANSLATION_MODEL_*` 可配置 OpenAI、Anthropic、GLM、MiniMax 或任意
-OpenAI-compatible API；未配置时继承通用 `MODEL_*`。重新渲染属于展示验证产物，会输出
+OpenAI-compatible API；未配置时依次继承 `DECISION_MODEL_*`、`DEEP_MODEL_*`、
+`GATER_MODEL_*` 或通用 `MODEL_*`。重新渲染属于展示验证产物，会输出
 `validation-report.html`，不会伪装成重新完成时效核验的正式报告。
 
 大批量中文报告可按供应商能力将临床分析模型与翻译模型分开配置。翻译器会复用
 完全相同的叙事、跳过纯临床 token，并使用占位符保护临床事实；每批结果写入
-`report-translations.json` 检查点，中断后只续跑尚未完成的唯一文本。批次与并发可用
+`report-translations.json` 检查点，中断后只续跑尚未完成的唯一文本。患者网页中的
+排除试验仅翻译简明排除依据；完整逐标准审计仍保留在 `pipeline.json`，避免为网页未
+展示的重复审计文本付出翻译成本。批次与并发可用
 `TRANSLATION_BATCH_MAX_UNITS`、`TRANSLATION_BATCH_MAX_CHARACTERS` 和
-`TRANSLATION_MODEL_CONCURRENCY` 调整。`TRANSLATION_MODE=required` 可要求中国患者
-在缺少翻译 API 时停止；`auto` 会记录 `skipped_no_model_api`，不会静默声称已翻译。
+`TRANSLATION_MODEL_CONCURRENCY` 调整。中国患者默认采用
+`TRANSLATION_MODE=required`，缺少可复用 API 时停止。项目自动读取仓库根目录下被 Git
+忽略的 `.env`，可跨终端保存本地配置；API Key 不会写入运行清单或提交到仓库。
 
 ## 报告审查
 

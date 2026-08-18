@@ -76,8 +76,9 @@ def _validate_cancer_buddy(root: Path, documents: dict[str, dict[str, Any]]) -> 
     if len(codes) != 1:
         raise ValueError(f"Cancer Buddy patient_code mismatch in {root}: {sorted(codes)}")
     for name in CB_REQUIRED[1:]:
-        if str(documents[name].get("schema_version") or "") != "2":
-            raise ValueError(f"{name} must use schema_version 2")
+        schema_version = str(documents[name].get("schema_version") or "")
+        if schema_version.split(".", 1)[0] != "2":
+            raise ValueError(f"{name} must use a compatible schema_version 2.x")
     return next(iter(codes))
 
 

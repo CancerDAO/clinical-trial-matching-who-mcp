@@ -39,7 +39,7 @@ from patient_input import load_patient_input
 from generic_hard_rules import apply_generic_hard_rules
 from feasibility import WEIGHTS, compute_feasibility
 from html_renderer import render_html, render_validation_html
-from report_translation import maybe_translate_report
+from report_translation import concise_patient_text, maybe_translate_report
 from mcp_http_client import run_remote_who_workflow
 from mcp_stdio_client import run_who_workflow
 from mechanism_categories import CATEGORY_ORDER, classify_mechanism
@@ -702,6 +702,9 @@ def finalize(*, prepared_path: Path, analysis_path: Path, out_dir: Path) -> dict
         trial["country_assessment"] = assess_country_evidence(trial, patient)
         trial["resolved_source_url"] = resolved_trial_url(trial)
         trial["display_title"] = patient_facing_title(trial, language)
+        trial["patient_display_rationale"] = concise_patient_text(
+            (trial.get("gating") or {}).get("rationale") or ""
+        )
         trials.append(trial)
     for source in prepared.get("hard_excluded_trials") or []:
         trial = dict(source)
@@ -823,6 +826,37 @@ def finalize(*, prepared_path: Path, analysis_path: Path, out_dir: Path) -> dict
         payload = maybe_translate_report(
             payload, cache_path=out_dir / "report-translations.json"
         )
+        remaining_translation = int(
+            (payload.get("translation_provenance") or {}).get("remaining_units") or 0
+        )
+        translation_status = str(
+            (payload.get("translation_provenance") or {}).get("completion_status")
+            or ("complete" if remaining_translation == 0 else "incomplete")
+        )
+        if language == "zh-CN" and remaining_translation:
+            accepted_partial = translation_status == "accepted_partial"
+            warning = {
+                "code": (
+                    "TRANSLATION_PARTIAL_ACCEPTED" if accepted_partial
+                    else "TRANSLATION_INCOMPLETE"
+                ),
+                "message_zh": (
+                    f"仍有 {remaining_translation} 个患者可见文本单元保留英文原文；"
+                    + (
+                        "数量在配置的容许范围内，临床标识符保护未被放宽。"
+                        if accepted_partial else "本报告仅可用于内部审查。"
+                    )
+                ),
+                "message_en": (
+                    f"{remaining_translation} patient-facing text units retain their English source; "
+                    + (
+                        "this is within the configured tolerance and identifier protection remains enforced."
+                        if accepted_partial else "this report is for internal review only."
+                    )
+                ),
+            }
+            payload.setdefault("report_warnings", []).append(warning)
+            payload["report_mode"] = "formal_with_warnings"
     write_json_atomic(out_dir / "pipeline.json", payload)
     (out_dir / "run-manifest.json").write_text(
         json.dumps(run_manifest, ensure_ascii=False, indent=2), encoding="utf-8"

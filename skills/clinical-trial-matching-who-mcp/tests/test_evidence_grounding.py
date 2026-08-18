@@ -174,6 +174,29 @@ class EvidenceGroundingTests(unittest.TestCase):
             item["recommendation_bucket"] == "overall_best" for item in paths
         ))
 
+    def test_resolvable_washout_does_not_remove_conditional_top_candidate(self):
+        def source(trial_id, confidence, sites, score, failed):
+            return {
+                "trial_id": trial_id, "title": trial_id,
+                "interventions": [trial_id], "overall_status": "RECRUITING",
+                "patient_country_site_count": sites,
+                "feasibility": {"composite": score},
+                "gating": {
+                    "verdict": "conditional", "confidence": confidence,
+                    "blockers_satisfied": ["a", "b", "c", "d"],
+                    "blockers_failed": failed, "blockers_pending": [],
+                    "rationale": "candidate",
+                },
+                "risk_summary": {"risks": []},
+                "efficacy_summary": {"vs_soc": {"available": False}},
+            }
+        paths = ground_decision_report({}, [
+            source("WASHOUT", 0.75, 16, 0.896, ["Current therapy active; requires washout before screening"]),
+            source("LOWER", 0.72, 1, 0.871, []),
+            source("HARD", 0.99, 20, 0.99, ["Wrong cancer type"]),
+        ], patient={})["decision_paths"]
+        self.assertEqual([item["trial_id"] for item in paths], ["WASHOUT", "LOWER"])
+
     def test_top_paths_suppress_near_duplicate_core_agents(self):
         def source(trial_id, agent, score):
             return {

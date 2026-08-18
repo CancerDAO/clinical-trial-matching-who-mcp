@@ -16,14 +16,16 @@ class PatientInputTests(unittest.TestCase):
     def _write(self, root: Path, name: str, value: dict) -> None:
         (root / name).write_text(json.dumps(value), encoding="utf-8")
 
-    def _archive(self, root: Path, *, with_location: bool = True) -> None:
+    def _archive(
+        self, root: Path, *, with_location: bool = True, schema_version: str = "2",
+    ) -> None:
         code = "PT-A1B2C3"
         self._write(root, "profile.json", {
             "schema": "cancer_buddy_profile_v3", "patient_code": code,
             "locale": "zh", "summary": {}, "latest_status": {},
         })
         self._write(root, "patient_summary.json", {
-            "patient_code": code, "schema_version": "2",
+            "patient_code": code, "schema_version": schema_version,
             "demographics": {"sex_normalized": "female", "age": 55, "ecog": 1},
             "diagnosis": {
                 "primary": "colorectal cancer", "histology": "adenocarcinoma",
@@ -32,7 +34,7 @@ class PatientInputTests(unittest.TestCase):
             "current_status": {"regimen": None, "ecog": 1},
         })
         self._write(root, "molecular.json", {
-            "patient_code": code, "schema_version": "2", "reports": [],
+            "patient_code": code, "schema_version": schema_version, "reports": [],
             "variants": [
                 {"gene": "KRAS", "variant": "G12C", "verification_status": "clinician_verified"},
                 {"gene": "TP53", "variant": "R175H", "verification_status": "disputed"},
@@ -42,7 +44,7 @@ class PatientInputTests(unittest.TestCase):
             ], "mmr_results": [],
         })
         self._write(root, "treatment_lines.json", {
-            "patient_code": code, "schema_version": "2",
+            "patient_code": code, "schema_version": schema_version,
             "episodes": [{
                 "episode_id": "T1", "sequence_index": 0,
                 "documented_line_label": None, "regimen": "FOLFOX",
@@ -51,10 +53,10 @@ class PatientInputTests(unittest.TestCase):
             }],
         })
         self._write(root, "labs.json", {
-            "patient_code": code, "schema_version": "2", "panels": [],
+            "patient_code": code, "schema_version": schema_version, "panels": [],
         })
         self._write(root, "comorbidities.json", {
-            "patient_code": code, "schema_version": "2",
+            "patient_code": code, "schema_version": schema_version,
             "conditions": [], "medications": [], "allergies": [],
         })
         if with_location:
@@ -96,6 +98,13 @@ class PatientInputTests(unittest.TestCase):
         self.assertEqual(patient["mutations"], ["KRAS G12C"])
         self.assertIsNone(patient["treatment_lines_completed"])
         self.assertEqual(audit["input_type"], "cancer_buddy_archive")
+
+    def test_cancer_buddy_minor_schema_version_is_compatible(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self._archive(root, schema_version="2.1")
+            patient, _ = load_patient_input(root)
+        self.assertEqual(patient["patient_id"], "PT-A1B2C3")
 
     def test_country_is_never_inferred(self):
         with tempfile.TemporaryDirectory() as directory:
