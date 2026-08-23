@@ -6,6 +6,17 @@
   "willing_to_travel_internationally": "unknown",
   "travel_note": "",
   "affordability_tier": "unknown",
+  "confirmed_fields": {
+    "age": 55,
+    "sex": "female",
+    "cancer_type": "colorectal cancer",
+    "disease_stage": "metastatic",
+    "mutations": ["KRAS G12C"],
+    "treatment_lines_completed": 2,
+    "prior_therapies": ["FOLFOX", "FOLFIRI"],
+    "ecog": 1,
+    "biomarkers": {"MSI": "MSS"}
+  },
   "search_terms": {
     "named_agents": [],
     "combination_targets": [],

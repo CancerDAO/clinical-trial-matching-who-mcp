@@ -66,7 +66,7 @@ macOS/Linux 使用相同命令。若系统命令为 `python3`，请将本文命�
 ### 2.2 获取项目
 
 ```bash
-git clone https://github.com/FCX-28579/clinical-trial-matching-who-mcp.git
+git clone https://github.com/CancerDAO/clinical-trial-matching-who-mcp.git
 cd clinical-trial-matching-who-mcp
 ```
 

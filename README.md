@@ -57,6 +57,8 @@ npx skills add . --skill '*'
 Cancer Buddy 目录可以包含 `profile.json`、`patient_summary.json`、`molecular.json`、
 `treatment_lines.json`、`labs.json`、`comorbidities.json` 和 `readiness.json`。
 患者国家/地区不得从语言或医院名称推断，应在病历数据或 `matching_context.json` 中明确提供。
+平台或人工复核确认的匹配关键字段可写入 `matching_context.confirmed_fields`；归一化器只接受
+白名单字段，并在输入审计中记录所有覆盖项。
 示例见
 [matching_context.example.json](skills/clinical-trial-matching-who-mcp/examples/matching_context.example.json)。
 

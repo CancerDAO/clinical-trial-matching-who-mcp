@@ -125,3 +125,28 @@ class PatientInputTests(unittest.TestCase):
             patient, _ = load_patient_input(root)
         self.assertEqual(patient["current_therapy_status"], "RMC-6236")
         self.assertIs(patient["current_therapy_ongoing"], False)
+
+    def test_platform_confirmed_fields_override_archive_with_audit(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self._archive(root)
+            self._write(root, "matching_context.json", {
+                "country": "China", "city": "Wuhan",
+                "confirmed_fields": {
+                    "age": "56", "cancer_type": "lung adenocarcinoma",
+                    "disease_stage": "metastatic", "mutations": ["EGFR L858R"],
+                    "treatment_lines_completed": "2",
+                    "prior_therapies": ["osimertinib"], "ecog": "1",
+                    "biomarkers": {"PD-L1": "50%"},
+                    "ignored_field": "not accepted",
+                },
+            })
+            patient, audit = load_patient_input(root)
+        self.assertEqual(patient["age"], "56")
+        self.assertEqual(patient["cancer_type"], "lung adenocarcinoma")
+        self.assertEqual(patient["mutations"], ["EGFR L858R"])
+        self.assertEqual(patient["treatment_lines_completed"], 2)
+        self.assertEqual(patient["prior_therapies"], ["osimertinib"])
+        self.assertEqual(patient["biomarkers_known"], {"PD-L1": "50%"})
+        self.assertNotIn("ignored_field", audit["confirmed_field_overrides"])
+        self.assertIn("cancer_type", audit["confirmed_field_overrides"])
