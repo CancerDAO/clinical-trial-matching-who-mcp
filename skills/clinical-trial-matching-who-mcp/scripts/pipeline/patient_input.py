@@ -1,6 +1,7 @@
 """Normalize legacy patient JSON or a Cancer Buddy archive into one contract."""
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import Any
 
@@ -54,6 +55,37 @@ def _string_list(value: Any, field: str) -> list[str]:
     return list(dict.fromkeys(str(item).strip() for item in values if str(item).strip()))
 
 
+def _treatment_lines(value: Any) -> int:
+    if isinstance(value, bool):
+        raise ValueError("confirmed field treatment_lines_completed must be an integer")
+    if isinstance(value, int):
+        lines = value
+    elif isinstance(value, float) and value.is_integer():
+        lines = int(value)
+    else:
+        text = str(value or "").strip()
+        patterns = (
+            r"^(\d+)$",
+            r"^(?:已完成|完成)\s*(\d+)\s*线(?:治疗)?$",
+            r"^(\d+)\s*线(?:治疗)?$",
+            r"^(?:completed\s+)?(\d+)\s+(?:treatment\s+)?lines?$",
+        )
+        match = next(
+            (candidate for pattern in patterns
+             if (candidate := re.fullmatch(pattern, text, flags=re.IGNORECASE))),
+            None,
+        )
+        if match is None:
+            raise ValueError(
+                "confirmed field treatment_lines_completed must be one "
+                "unambiguous non-negative integer"
+            )
+        lines = int(match.group(1))
+    if lines < 0:
+        raise ValueError("confirmed field treatment_lines_completed cannot be negative")
+    return lines
+
+
 def _apply_confirmed_fields(
     patient: dict[str, Any], context: dict[str, Any]
 ) -> list[str]:
@@ -74,15 +106,9 @@ def _apply_confirmed_fields(
             patient[target] = _string_list(confirmed[field], field)
             applied.append(field)
     if "treatment_lines_completed" in confirmed:
-        try:
-            lines = int(str(confirmed["treatment_lines_completed"]).strip())
-        except ValueError as exc:
-            raise ValueError(
-                "confirmed field treatment_lines_completed must be an integer"
-            ) from exc
-        if lines < 0:
-            raise ValueError("confirmed field treatment_lines_completed cannot be negative")
-        patient["treatment_lines_completed"] = lines
+        patient["treatment_lines_completed"] = _treatment_lines(
+            confirmed["treatment_lines_completed"]
+        )
         applied.append("treatment_lines_completed")
     if "biomarkers" in confirmed:
         value = confirmed["biomarkers"]

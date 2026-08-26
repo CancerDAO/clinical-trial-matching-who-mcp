@@ -335,9 +335,13 @@ def prepare_formal(args: argparse.Namespace) -> dict[str, Any]:
         report_language_override=getattr(args, "report_language", None),
         patient_country_override=getattr(args, "patient_country", None),
     )
+    search_stats = result.get("search_stats") or {}
+    portal_delta = result.get("portal_delta") or {}
+    live_registry = result.get("live_registry_audit") or {}
+    retrieval_complete = bool(result.get("retrieval_complete"))
     state = {
         "schema_version": "formal-pipeline-state-v1",
-        "stage": "gater_pending",
+        "stage": "gater_pending" if retrieval_complete else "retrieval_incomplete",
         "run_dir": str(run_dir),
         "patient_path": result.get(
             "normalized_patient_path", str(Path(args.patient).resolve())
@@ -357,7 +361,26 @@ def prepare_formal(args: argparse.Namespace) -> dict[str, Any]:
         "recall_count": len(result["all_verified_trials"]),
         "hard_excluded_count": len(result.get("hard_excluded_trials") or []),
         "gater_expected_count": len(result["analysis_candidate_ids"]),
-        "next_action": "Complete every gater batch listed in analysis_jobs.json.",
+        "retrieval_audit": {
+            "complete": retrieval_complete,
+            "global_truncated": bool(search_stats.get("global_truncated")),
+            "query_truncation_count": int(
+                search_stats.get("query_truncation_count") or 0
+            ),
+            "portal_delta_status": str(portal_delta.get("status") or "not_executed"),
+            "portal_delta_trial_count": int(portal_delta.get("returned") or 0),
+            "live_registry_attempted": int(live_registry.get("attempted") or 0),
+            "live_registry_reachable": int(live_registry.get("reachable") or 0),
+            "live_registry_active": int(live_registry.get("active") or 0),
+            "live_registry_inactive": int(live_registry.get("inactive") or 0),
+            "live_registry_unknown": int(live_registry.get("unknown") or 0),
+            "live_registry_errors": int(live_registry.get("errors") or 0),
+        },
+        "next_action": (
+            "Complete every gater batch listed in analysis_jobs.json."
+            if retrieval_complete
+            else "Retrieval was incomplete; do not execute model analysis. Start a new run."
+        ),
     }
     if routing:
         routing_path = run_dir / "model-routing.json"

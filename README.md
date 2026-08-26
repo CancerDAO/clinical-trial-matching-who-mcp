@@ -59,6 +59,9 @@ Cancer Buddy 目录可以包含 `profile.json`、`patient_summary.json`、`molec
 患者国家/地区不得从语言或医院名称推断，应在病历数据或 `matching_context.json` 中明确提供。
 平台或人工复核确认的匹配关键字段可写入 `matching_context.confirmed_fields`；归一化器只接受
 白名单字段，并在输入审计中记录所有覆盖项。
+`treatment_lines_completed` 最终是非负整数；平台应优先归一化输入，项目端同时兼容
+`2`、`"2"`、`"2线"`、`"已完成2线治疗"` 和明确的英文等价写法。范围、下限或未知值
+（例如 `2-3线`、`至少2线`）不会被猜成单一整数。
 示例见
 [matching_context.example.json](skills/clinical-trial-matching-who-mcp/examples/matching_context.example.json)。
 
@@ -101,6 +104,7 @@ export WHO_MCP_DB=/absolute/path/to/trials.db
 
 `prepare` 完成患者适配、搜索计划、MCP 检索、WHO 增量、去重、直接注册库核验、
 通用硬规则和 gater 任务生成。
+如果任一检索查询被截断，Prepare 会返回 `retrieval_incomplete`，不得继续产生模型分析费用。
 
 ```bash
 python skills/clinical-trial-matching-who-mcp/scripts/pipeline/run_formal_pipeline.py \

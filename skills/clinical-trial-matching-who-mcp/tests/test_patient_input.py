@@ -150,3 +150,27 @@ class PatientInputTests(unittest.TestCase):
         self.assertEqual(patient["biomarkers_known"], {"PD-L1": "50%"})
         self.assertNotIn("ignored_field", audit["confirmed_field_overrides"])
         self.assertIn("cancer_type", audit["confirmed_field_overrides"])
+
+    def test_platform_treatment_lines_accept_unambiguous_localized_values(self):
+        for value in (2, "2", "2线", "已完成 2 线治疗", "completed 2 treatment lines"):
+            with self.subTest(value=value), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                self._archive(root)
+                self._write(root, "matching_context.json", {
+                    "country": "China",
+                    "confirmed_fields": {"treatment_lines_completed": value},
+                })
+                patient, _ = load_patient_input(root)
+                self.assertEqual(patient["treatment_lines_completed"], 2)
+
+    def test_platform_treatment_lines_reject_ambiguous_values(self):
+        for value in ("2-3线", "至少2线", "多线治疗", -1, True):
+            with self.subTest(value=value), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                self._archive(root)
+                self._write(root, "matching_context.json", {
+                    "country": "China",
+                    "confirmed_fields": {"treatment_lines_completed": value},
+                })
+                with self.assertRaisesRegex(ValueError, "treatment_lines_completed"):
+                    load_patient_input(root)

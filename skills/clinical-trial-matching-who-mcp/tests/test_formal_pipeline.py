@@ -132,6 +132,12 @@ class FormalPipelineStateTests(unittest.TestCase):
                 "all_verified_trials": [{"id": "T1"}, {"id": "T2"}],
                 "hard_excluded_trials": [{"id": "T2"}],
                 "analysis_candidate_ids": ["T1"],
+                "retrieval_complete": True,
+                "portal_delta": {"status": "executed", "returned": 1},
+                "live_registry_audit": {
+                    "attempted": 2, "reachable": 2, "active": 1,
+                    "inactive": 1, "unknown": 0, "errors": 0,
+                },
             }
             with mock.patch.object(formal, "prepare", return_value=prepared) as called:
                 state = formal.prepare_formal(args)
@@ -139,6 +145,34 @@ class FormalPipelineStateTests(unittest.TestCase):
             self.assertEqual(called.call_args.kwargs["analysis_limit"], 0)
             self.assertEqual(state["stage"], "gater_pending")
             self.assertEqual(state["recall_count"], 2)
+            self.assertTrue(state["retrieval_audit"]["complete"])
+            self.assertEqual(state["retrieval_audit"]["portal_delta_trial_count"], 1)
+            self.assertEqual(state["retrieval_audit"]["live_registry_reachable"], 2)
+
+    def test_prepare_stops_before_analysis_when_retrieval_is_incomplete(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            patient = root / "patient.json"
+            plan = root / "plan.json"
+            patient.write_text("{}", encoding="utf-8")
+            plan.write_text("{}", encoding="utf-8")
+            args = argparse.Namespace(
+                run_dir=str(root / "run"), patient=str(patient), plan=str(plan),
+                db=None, mcp_python=None, mcp_server=None,
+                mcp_transport="streamable-http", mcp_url="http://127.0.0.1:8000/mcp",
+                max_per_query=5000, total_limit=20000, batch_size=5,
+                portal_delta=None,
+            )
+            prepared = {
+                "all_verified_trials": [], "hard_excluded_trials": [],
+                "analysis_candidate_ids": [], "retrieval_complete": False,
+                "search_stats": {"global_truncated": True, "query_truncation_count": 1},
+            }
+            with mock.patch.object(formal, "prepare", return_value=prepared):
+                state = formal.prepare_formal(args)
+        self.assertEqual(state["stage"], "retrieval_incomplete")
+        self.assertFalse(state["retrieval_audit"]["complete"])
+        self.assertEqual(state["retrieval_audit"]["query_truncation_count"], 1)
 
     def test_prepare_requires_explicit_external_registry_authorization(self):
         with tempfile.TemporaryDirectory() as temp:
