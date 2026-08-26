@@ -17,6 +17,8 @@ from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any
 
+from disease_concepts import contains_cjk
+
 PORTAL = "https://trialsearch.who.int"
 ADVANCED = f"{PORTAL}/AdvSearch.aspx"
 USER_AGENT = "CancerDAO-clinical-trial-matching/3.3 (research use)"
@@ -176,6 +178,12 @@ def _query_variants(plan: dict[str, Any]) -> list[dict[str, str]]:
     variants: list[dict[str, str]] = []
     seen: set[tuple[str, str, str]] = set()
     for group in plan.get("keyword_groups") or []:
+        source = str(group.get("source") or "").strip().casefold()
+        dimension = str(group.get("dimension") or "").strip()
+        if dimension == "chinese_registry_terms" or source in {
+            "chictr", "regional", "local_registry",
+        }:
+            continue
         label = str(group.get("label") or "unlabelled")
         conditions = list(dict.fromkeys(
             str(query.get("condition") or "").strip()
@@ -187,6 +195,12 @@ def _query_variants(plan: dict[str, Any]) -> list[dict[str, str]]:
             for query in group.get("queries") or []
             if str(query.get("term") or "").strip()
         ))
+        leaked = [value for value in conditions + terms if contains_cjk(value)]
+        if leaked:
+            raise ValueError(
+                "WHO Portal search terms must be English; provide English aliases "
+                f"for: {leaked}"
+            )
         condition = " OR ".join(f"({item})" for item in conditions)
         term = " OR ".join(f"({item})" for item in terms)
         if len(condition) > 1000 or len(term) > 1000:

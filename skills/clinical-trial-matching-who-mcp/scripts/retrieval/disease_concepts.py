@@ -60,6 +60,59 @@ _CONCEPTS: tuple[dict[str, Any], ...] = (
      "aliases": ("胸腺瘤", "胸腺癌")},
 )
 
+_CLINICAL_QUERY_TRANSLATIONS: tuple[tuple[str, str], ...] = (
+    ("晚期实体瘤", "advanced solid tumor"),
+    ("泛实体瘤", "solid tumor"),
+    ("实体瘤", "solid tumor"),
+    ("恶性肿瘤", "malignant tumor"),
+    ("微卫星高度不稳定", "microsatellite instability-high"),
+    ("微卫星不稳定性高", "microsatellite instability-high"),
+    ("错配修复功能缺陷", "mismatch repair deficient"),
+    ("错配修复功能完整", "mismatch repair proficient"),
+    ("免疫检查点抑制剂", "immune checkpoint inhibitor"),
+    ("抗体偶联药物", "antibody-drug conjugate"),
+    ("嵌合抗原受体T细胞", "CAR-T cell"),
+    ("微卫星稳定", "microsatellite stable"),
+    ("肿瘤突变负荷高", "tumor mutational burden-high"),
+    ("同源重组修复缺陷", "homologous recombination deficiency"),
+    ("程序性死亡配体1", "PD-L1"),
+    ("程序性死亡受体1", "PD-1"),
+    ("靶向治疗", "targeted therapy"),
+    ("精准肿瘤治疗", "precision oncology"),
+    ("联合治疗", "combination therapy"),
+    ("免疫治疗", "immunotherapy"),
+    ("双特异性抗体", "bispecific antibody"),
+    ("细胞治疗", "cell therapy"),
+    ("癌症疫苗", "cancer vaccine"),
+    ("肿瘤疫苗", "cancer vaccine"),
+    ("蛋白降解剂", "protein degrader"),
+    ("单克隆抗体", "monoclonal antibody"),
+    ("化学治疗", "chemotherapy"),
+    ("化疗", "chemotherapy"),
+    ("放射治疗", "radiotherapy"),
+    ("放疗", "radiotherapy"),
+    ("索托拉西布", "sotorasib"),
+    ("阿达格拉西布", "adagrasib"),
+    ("奥沙利铂", "oxaliplatin"),
+    ("伊立替康", "irinotecan"),
+    ("氟尿嘧啶", "fluorouracil"),
+    ("卡培他滨", "capecitabine"),
+    ("贝伐珠单抗", "bevacizumab"),
+    ("西妥昔单抗", "cetuximab"),
+    ("帕博利珠单抗", "pembrolizumab"),
+    ("纳武利尤单抗", "nivolumab"),
+    ("扩增", "amplification"),
+    ("融合", "fusion"),
+    ("突变", "mutation"),
+    ("缺失", "deletion"),
+    ("阳性", "positive"),
+    ("阴性", "negative"),
+    ("野生型", "wild-type"),
+    ("耐药", "resistance"),
+    ("抑制剂", "inhibitor"),
+    ("通路", "pathway"),
+)
+
 
 def _clean(value: Any) -> str:
     return re.sub(r"\s+", " ", str(value or "")).strip()
@@ -93,6 +146,34 @@ def _list(value: Any) -> list[str]:
 
 def contains_cjk(value: Any) -> bool:
     return bool(re.search(r"[\u4e00-\u9fff]", _clean(value)))
+
+
+def normalize_clinical_query_text(value: Any) -> str:
+    """Translate deterministic Chinese registry-search concepts into English.
+
+    This intentionally covers controlled clinical concepts, not free-form
+    machine translation. Remaining CJK is rejected at the global-registry
+    transport boundary so it can never leak into WHO MCP queries.
+    """
+    text = _clean(value)
+    if not text:
+        return ""
+    disease_replacements: list[tuple[str, str]] = []
+    for concept in _CONCEPTS:
+        primary = str(concept["english"][0])
+        for alias in concept["aliases"]:
+            if contains_cjk(alias):
+                disease_replacements.append((str(alias), primary))
+    replacements = sorted(
+        disease_replacements + list(_CLINICAL_QUERY_TRANSLATIONS),
+        key=lambda item: len(item[0]),
+        reverse=True,
+    )
+    for source, target in replacements:
+        text = text.replace(source, f" {target} ")
+    text = re.sub(r"[，、；：]", " ", text)
+    text = text.replace("（", " (").replace("）", ") ")
+    return _clean(text)
 
 
 def resolve_disease_terms(cancer_type: Any, search_terms: dict[str, Any] | None = None) -> dict[str, Any]:

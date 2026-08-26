@@ -21,6 +21,7 @@ from search_plan import (
     validate_search_plan_for_patient,
 )
 from who_mcp_adapter import build_mcp_requests, build_portal_delta_contract, merge_sources
+from who_portal_delta import _query_variants
 from who_mcp_verifier import verify_batch
 
 
@@ -107,6 +108,73 @@ class WhoMcpPipelineTests(unittest.TestCase):
             normalized["generation_audit"]["language_normalized_query_fields"], 1
         )
         self.assertEqual(source["keyword_groups"][0]["queries"][0]["condition"], "结直肠癌")
+
+    def test_all_mcp_query_terms_are_english_after_chinese_patient_input(self):
+        plan = build_baseline_search_plan({
+            "patient_id": "PT-CN",
+            "cancer_type": "结直肠癌",
+            "mutations": ["KRAS G12C突变", "微卫星稳定（MSS）"],
+            "search_terms": {
+                "named_agents": ["索托拉西布", "阿达格拉西布"],
+                "combination_targets": ["EGFR联合治疗"],
+                "pathway_terms": ["RAS通路耐药"],
+            },
+        })
+        plan = normalize_search_plan_for_patient(plan, {
+            "cancer_type": "结直肠癌",
+        })
+        compiled = compile_search_plan_for_mcp(plan)
+        self.assertNotIn(
+            "chinese_registry_terms",
+            [group.get("dimension") for group in compiled["keyword_groups"]],
+        )
+        for group in compiled["keyword_groups"]:
+            for query in group["queries"]:
+                self.assertNotRegex(
+                    json.dumps(query, ensure_ascii=False), r"[\u4e00-\u9fff]"
+                )
+
+    def test_mcp_boundary_rejects_untranslated_custom_chinese_term(self):
+        plan = {
+            "keyword_groups": [{
+                "dimension": "named_drug",
+                "label": "Named drug",
+                "source": "both",
+                "queries": [{"condition": "solid tumor", "term": "未知中文药物"}],
+            }],
+        }
+        with self.assertRaisesRegex(ValueError, "must be English"):
+            compile_search_plan_for_mcp(plan)
+
+    def test_mcp_compiler_excludes_chictr_only_groups(self):
+        plan = {
+            "keyword_groups": [{
+                "dimension": "disease_biomarker",
+                "label": "Global",
+                "source": "both",
+                "queries": [{"condition": "colorectal cancer", "term": "KRAS G12C"}],
+            }, {
+                "dimension": "chinese_registry_terms",
+                "label": "China registry",
+                "source": "chictr",
+                "queries": [{"condition": None, "term": "结直肠癌 KRAS G12C"}],
+            }],
+        }
+        compiled = compile_search_plan_for_mcp(plan)
+        self.assertEqual(len(compiled["keyword_groups"]), 1)
+        self.assertEqual(compiled["execution_audit"]["excluded_regional_group_count"], 1)
+
+    def test_who_portal_excludes_chictr_only_groups(self):
+        plan = build_baseline_search_plan({
+            "patient_id": "PT-CN", "cancer_type": "结直肠癌",
+            "mutations": ["KRAS G12C突变"],
+        })
+        variants = _query_variants(plan)
+        self.assertTrue(variants)
+        self.assertTrue(all(
+            "结直肠癌" not in json.dumps(item, ensure_ascii=False)
+            for item in variants
+        ))
 
     def test_baseline_plan_covers_all_eight_dimensions(self):
         plan = build_baseline_search_plan({
@@ -241,7 +309,7 @@ class WhoMcpPipelineTests(unittest.TestCase):
         executed = request["local_search"]["arguments"]["search_plan"]
         self.assertEqual(
             executed["execution_audit"]["compiler"],
-            "conjunctive-search-plan-v1",
+            "english-conjunctive-search-plan-v2",
         )
         self.assertEqual(request["local_search"]["arguments"]["country"], "")
         self.assertEqual(request["metadata"]["tool"], "database_metadata")

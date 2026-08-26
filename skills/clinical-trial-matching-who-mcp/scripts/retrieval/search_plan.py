@@ -6,7 +6,9 @@ import os
 import re
 from typing import Any
 
-from disease_concepts import contains_cjk, resolve_disease_terms
+from disease_concepts import (
+    contains_cjk, normalize_clinical_query_text, resolve_disease_terms,
+)
 
 REQUIRED_DIMENSIONS = (
     "disease_biomarker", "pan_tumor", "combination_targets", "pathway_resistance",
@@ -107,13 +109,30 @@ def validate_search_plan_for_patient(
 
 
 def compile_search_plan_for_mcp(plan: dict[str, Any]) -> dict[str, Any]:
-    """Compile each disease + concept pair into one conjunctive FTS query."""
+    """Compile English global-registry queries into conjunctive MCP FTS terms."""
     compiled = deepcopy(plan)
     transformed = 0
+    excluded_regional_groups = 0
+    global_groups: list[dict[str, Any]] = []
     for group in compiled.get("keyword_groups") or []:
+        source = str(group.get("source") or "").strip().casefold()
+        if _dimension(group) == "chinese_registry_terms" or source in {
+            "chictr", "regional", "local_registry",
+        }:
+            excluded_regional_groups += 1
+            continue
+        if contains_cjk(group.get("label")):
+            group["label"] = (_dimension(group) or "global_registry").replace("_", " ").title()
         for query in group.get("queries") or []:
             condition = str(query.get("condition") or "").strip()
             term = str(query.get("term") or "").strip()
+            if contains_cjk(condition) or contains_cjk(term):
+                raise ValueError(
+                    "WHO MCP search terms must be English; provide an English alias "
+                    f"for query condition={condition!r}, term={term!r}"
+                )
+            query.pop("original_condition_language_value", None)
+            query.pop("original_term_language_value", None)
             if condition and term:
                 query["original_condition"] = condition
                 query["original_term"] = term
@@ -121,9 +140,13 @@ def compile_search_plan_for_mcp(plan: dict[str, Any]) -> dict[str, Any]:
                 query["term"] = f"{condition} {term}"
                 query["query_semantics"] = "compiled_conjunctive_anchor"
                 transformed += 1
+        global_groups.append(group)
+    compiled["keyword_groups"] = global_groups
     compiled["execution_audit"] = {
-        "compiler": "conjunctive-search-plan-v1",
+        "compiler": "english-conjunctive-search-plan-v2",
         "transformed_query_count": transformed,
+        "excluded_regional_group_count": excluded_regional_groups,
+        "english_query_guard": "passed",
         "purpose": (
             "Prevent condition-only OR recall by requiring disease and concept "
             "anchors in the same MCP FTS query."
@@ -149,7 +172,7 @@ def normalize_search_plan_for_patient(
         for query in group.get("queries") or []:
             condition = str(query.get("condition") or "").strip()
             term = str(query.get("term") or "").strip()
-            if condition and (contains_cjk(condition) or condition == original):
+            if condition and condition == original:
                 query["original_condition_language_value"] = condition
                 query["condition"] = replacement
                 changed += 1
@@ -157,6 +180,13 @@ def normalize_search_plan_for_patient(
                 query["original_term_language_value"] = term
                 query["term"] = term.replace(original, replacement)
                 changed += 1
+            for field in ("condition", "term"):
+                value = str(query.get(field) or "").strip()
+                translated = normalize_clinical_query_text(value)
+                if translated != value:
+                    query.setdefault(f"original_{field}_language_value", value)
+                    query[field] = translated
+                    changed += 1
     audit = normalized.setdefault("generation_audit", {})
     audit["disease_normalization"] = disease
     audit["language_normalized_query_fields"] = changed
@@ -294,7 +324,7 @@ def build_baseline_search_plan(patient: dict[str, Any]) -> dict[str, Any]:
             ] or [f"{primary_disease} {anchor}"], None),
         },
     ]
-    return {
+    plan = {
         "schema_version": "clinical-search-plan-v1",
         "patient_id": patient.get("patient_id"),
         "patient_summary": "Deterministic baseline generated from normalized patient facts.",
@@ -322,3 +352,4 @@ def build_baseline_search_plan(patient: dict[str, Any]) -> dict[str, Any]:
             ),
         },
     }
+    return normalize_search_plan_for_patient(plan, patient)
