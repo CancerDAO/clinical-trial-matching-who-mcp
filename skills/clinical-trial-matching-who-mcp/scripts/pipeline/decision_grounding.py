@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from typing import Any
 import re
+from clinical_fact_grounding import partition_resolvable_blockers
 
 
 INACTIVE_STATUSES = {
@@ -49,8 +50,16 @@ def _candidate_sort_key(source: dict[str, Any], patient: dict[str, Any]) -> tupl
         feasibility_score = float(composite)
     except (TypeError, ValueError):
         feasibility_score = 0.0
-    pending = len(gating.get("blockers_pending") or gating.get("pending") or [])
-    satisfied = len(gating.get("blockers_satisfied") or gating.get("satisfied") or [])
+    pending = int(
+        gating.get("blockers_pending_count")
+        if gating.get("blockers_pending_count") is not None
+        else len(gating.get("blockers_pending") or gating.get("pending") or [])
+    )
+    satisfied = int(
+        gating.get("blockers_satisfied_count")
+        if gating.get("blockers_satisfied_count") is not None
+        else len(gating.get("blockers_satisfied") or gating.get("satisfied") or [])
+    )
     try:
         confidence = float(gating.get("confidence") or 0)
     except (TypeError, ValueError):
@@ -82,7 +91,7 @@ def _rank_paths(
     eligible = [
         source for source in sources.values()
         if (source.get("gating") or {}).get("verdict") in {"match", "conditional"}
-        and not (source.get("gating") or {}).get("blockers_failed")
+        and not _has_hard_failed_blocker(source.get("gating") or {})
         and str(source.get("overall_status") or "").upper().replace(" ", "_")
         not in INACTIVE_STATUSES
         and not _current_treatment_overlap(source, patient)
@@ -116,6 +125,15 @@ def _rank_paths(
             "selection_basis": "global_patient_fit_with_near_duplicate_suppression",
         })
     return ranked
+
+
+def _has_hard_failed_blocker(gating: dict[str, Any]) -> bool:
+    """Treat protocol washout/timing as resolvable for conditional ranking."""
+    hard, _ = partition_resolvable_blockers(
+        gating.get("blockers_failed") or [],
+        verdict=str(gating.get("verdict") or ""),
+    )
+    return bool(hard)
 
 
 def _core_agent(source: dict[str, Any]) -> str:
@@ -170,6 +188,9 @@ def ground_decision_path(
     efficacy = source.get("efficacy_summary") or {}
     feasibility = source.get("feasibility") or {}
     verdict = str(gating.get("verdict") or "")
+    hard_failures, resolvable_pending = partition_resolvable_blockers(
+        gating.get("blockers_failed") or [], verdict=verdict,
+    )
     grounded = {
         **path,
         "trial_title": source.get("title") or path.get("trial_title") or "",
@@ -187,8 +208,8 @@ def ground_decision_path(
         "vs_soc": efficacy.get("vs_soc") or {"available": False},
         "risks": risk.get("risks") or [],
         "blockers_satisfied": gating.get("blockers_satisfied") or [],
-        "blockers_failed": gating.get("blockers_failed") or [],
-        "blockers_pending": gating.get("blockers_pending") or [],
+        "blockers_failed": hard_failures,
+        "blockers_pending": (gating.get("blockers_pending") or []) + resolvable_pending,
     }
     zh = language == "zh-CN"
     rationale = _meaningful_rationale(path, gating, efficacy)

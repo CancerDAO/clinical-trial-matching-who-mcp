@@ -463,7 +463,14 @@ def validate_analysis_bundle(
 
 def normalized_report_analysis(item: dict[str, Any]) -> dict[str, Any]:
     """Map validated UTF-8 subskill outputs to the report contract."""
+    from clinical_fact_grounding import (
+        correct_analysis_clinical_facts, partition_resolvable_blockers,
+    )
+    item = correct_analysis_clinical_facts(item)
     gating = item["gating"]
+    hard_failures, resolvable_pending = partition_resolvable_blockers(
+        gating.get("blockers_failed") or [], verdict=str(gating.get("verdict") or ""),
+    )
     risk = item.get("risk_annotation") or {"risks": []}
     efficacy = item.get("efficacy_context") or {}
     snapshot = efficacy.get("efficacy_snapshot") or {}
@@ -501,8 +508,12 @@ def normalized_report_analysis(item: dict[str, Any]) -> dict[str, Any]:
             "verdict": gating["verdict"],
             "confidence": gating["confidence"],
             "satisfied": gating.get("blockers_satisfied") or [],
-            "pending": (gating.get("blockers_pending") or []) + (gating.get("advisors_unknown") or []),
-            "exclusion_reasons": gating.get("blockers_failed") or [],
+            "pending": (
+                (gating.get("blockers_pending") or [])
+                + resolvable_pending
+                + (gating.get("advisors_unknown") or [])
+            ),
+            "exclusion_reasons": hard_failures,
             "rationale": gating.get("rationale") or "",
             "hard_rules_triggered": gating.get("hard_rules_triggered") or [],
             "inclusion_evaluation": gating.get("inclusion_evaluation") or [],

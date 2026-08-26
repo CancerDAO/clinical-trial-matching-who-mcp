@@ -66,6 +66,37 @@ class FormalPipelineStateTests(unittest.TestCase):
         )
         self.assertNotIn("risk_annotation", result["analyzed_trials"][0])
 
+    def test_decision_input_prefers_full_prepared_source_fields(self):
+        gating = [{
+            "trial_id": "NCT06385925",
+            "gating": {
+                "verdict": "conditional", "confidence": 0.75,
+                "blockers_satisfied": [], "blockers_failed": [],
+                "blockers_pending": ["washout"], "hard_rules_triggered": [],
+                "rationale": "candidate",
+            },
+        }]
+        deep = [{
+            **gating[0],
+            "risk_annotation": {"trial_mechanisms_identified": [], "risks": []},
+            "efficacy_context": {
+                "efficacy_snapshot": {"match_type": "no_data", "applies_because": "unknown"},
+                "vs_soc": {"available": False}, "development_evidence": [],
+            },
+        }]
+        compact_jobs = {"batches": [{"trials": [{"id": "NCT06385925"}]}]}
+        full_source = [{
+            "id": "NCT06385925", "patient_country_site_count": 16,
+            "country_assessment": {"class": "domestic_named"},
+            "feasibility": {"composite": 0.896, "sub_scores": {"geographic_access": 1.0}},
+        }]
+        result = formal._decision_input(gating, deep, compact_jobs, full_source)
+        candidate = result["analyzed_trials"][0]
+        self.assertEqual(candidate["patient_country_site_count"], 16)
+        self.assertEqual(candidate["country_assessment"]["class"], "domestic_named")
+        self.assertEqual(candidate["feasibility"]["composite"], 0.896)
+        self.assertEqual(candidate["gating"]["blockers_pending_count"], 1)
+
     def test_prepare_rejects_reused_run_directory(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
@@ -101,6 +132,12 @@ class FormalPipelineStateTests(unittest.TestCase):
                 "all_verified_trials": [{"id": "T1"}, {"id": "T2"}],
                 "hard_excluded_trials": [{"id": "T2"}],
                 "analysis_candidate_ids": ["T1"],
+                "retrieval_complete": True,
+                "portal_delta": {"status": "executed", "returned": 1},
+                "live_registry_audit": {
+                    "attempted": 2, "reachable": 2, "active": 1,
+                    "inactive": 1, "unknown": 0, "errors": 0,
+                },
             }
             with mock.patch.object(formal, "prepare", return_value=prepared) as called:
                 state = formal.prepare_formal(args)
@@ -108,6 +145,34 @@ class FormalPipelineStateTests(unittest.TestCase):
             self.assertEqual(called.call_args.kwargs["analysis_limit"], 0)
             self.assertEqual(state["stage"], "gater_pending")
             self.assertEqual(state["recall_count"], 2)
+            self.assertTrue(state["retrieval_audit"]["complete"])
+            self.assertEqual(state["retrieval_audit"]["portal_delta_trial_count"], 1)
+            self.assertEqual(state["retrieval_audit"]["live_registry_reachable"], 2)
+
+    def test_prepare_stops_before_analysis_when_retrieval_is_incomplete(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            patient = root / "patient.json"
+            plan = root / "plan.json"
+            patient.write_text("{}", encoding="utf-8")
+            plan.write_text("{}", encoding="utf-8")
+            args = argparse.Namespace(
+                run_dir=str(root / "run"), patient=str(patient), plan=str(plan),
+                db=None, mcp_python=None, mcp_server=None,
+                mcp_transport="streamable-http", mcp_url="http://127.0.0.1:8000/mcp",
+                max_per_query=5000, total_limit=20000, batch_size=5,
+                portal_delta=None,
+            )
+            prepared = {
+                "all_verified_trials": [], "hard_excluded_trials": [],
+                "analysis_candidate_ids": [], "retrieval_complete": False,
+                "search_stats": {"global_truncated": True, "query_truncation_count": 1},
+            }
+            with mock.patch.object(formal, "prepare", return_value=prepared):
+                state = formal.prepare_formal(args)
+        self.assertEqual(state["stage"], "retrieval_incomplete")
+        self.assertFalse(state["retrieval_audit"]["complete"])
+        self.assertEqual(state["retrieval_audit"]["query_truncation_count"], 1)
 
     def test_prepare_requires_explicit_external_registry_authorization(self):
         with tempfile.TemporaryDirectory() as temp:

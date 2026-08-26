@@ -8,14 +8,35 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts" / "render"))
 
 from report_translation import (
-    apply_cached_residual_translations, apply_units, collect_units, contains_narrative_language, needs_translation,
+    apply_cached_residual_translations, apply_units, collect_units, concise_patient_text, contains_narrative_language, needs_translation,
     mask_protected_facts, prepare_translation_work, protected_facts,
     maybe_translate_report, restore_protected_facts, translate_batch_resilient,
-    translation_batches, translation_batch_limits,
+    translation_batches, translation_batch_limits, patient_visible_evaluations,
 )
 
 
 class ReportTranslationTests(unittest.TestCase):
+    def test_patient_rationale_is_concise_without_changing_audit_source(self):
+        source = "First clinically useful sentence. " + ("Additional audit detail " * 30)
+        result = concise_patient_text(source, 80)
+        self.assertLessEqual(len(result), 80)
+        self.assertEqual(result, "First clinically useful sentence.")
+
+    def test_patient_visible_evaluations_prioritize_clinical_rows_and_cap_length(self):
+        gating = {"inclusion_evaluation": [
+            {"status": "unknown", "criterion": "Administrative requirement."},
+            {"status": "unknown", "criterion": "KRAS mutation cohort must match."},
+            {"status": "potential_conflict", "criterion": "Cardiac exclusion applies."},
+        ] + [
+            {"status": "unknown", "criterion": f"Other criterion {index}."}
+            for index in range(8)
+        ]}
+        with mock.patch.dict(os.environ, {"REPORT_ELIGIBILITY_MAX_ROWS": "2"}, clear=True):
+            selected = patient_visible_evaluations(gating)
+        self.assertEqual(len(selected), 2)
+        self.assertEqual(selected[0]["status"], "potential_conflict")
+        self.assertIn("KRAS", selected[1]["criterion"])
+
     def test_translation_preserves_identifiers_and_does_not_gate(self):
         payload = {
             "formal_report_ready": True, "language": "en",
@@ -129,8 +150,48 @@ class ReportTranslationTests(unittest.TestCase):
 
     def test_translation_batches_are_not_selected_by_model_name(self):
         with mock.patch.dict(os.environ, {}, clear=True):
-            self.assertEqual(translation_batch_limits("model-a"), (200, 16000))
-            self.assertEqual(translation_batch_limits("model-b"), (200, 16000))
+            self.assertEqual(translation_batch_limits("model-a"), (60, 6000))
+            self.assertEqual(translation_batch_limits("model-b"), (60, 6000))
+
+    def test_excluded_trial_translates_only_patient_visible_exclusion_basis(self):
+        payload = {"trials": [{
+            "gating": {
+                "verdict": "exclude",
+                "rationale": "The cancer type is excluded.",
+                "satisfied": ["Age is eligible."],
+                "pending": ["Confirm laboratory values."],
+                "exclusion_reasons": ["Colorectal cancer is excluded."],
+                "inclusion_evaluation": [{"criterion": "Adult patient."}],
+                "exclusion_evaluation": [{"evidence": "CRC is excluded."}],
+            },
+        }]}
+        paths = {unit["path"] for unit in collect_units(payload)}
+        self.assertIn("trials/0/gating/rationale", paths)
+        self.assertNotIn("trials/0/gating/exclusion_reasons/0", paths)
+        self.assertNotIn("trials/0/gating/satisfied/0", paths)
+        self.assertNotIn("trials/0/gating/pending/0", paths)
+        self.assertFalse(any("evaluation" in path for path in paths))
+
+    def test_structured_candidate_evaluation_replaces_duplicate_summary_lists(self):
+        payload = {"trials": [{
+            "gating": {
+                "verdict": "conditional",
+                "rationale": "Potentially eligible after confirmation.",
+                "satisfied": ["Cancer type matches."],
+                "pending": ["Confirm laboratory values."],
+                "exclusion_reasons": ["No confirmed exclusion."],
+                "inclusion_evaluation": [{
+                    "criterion": "Adequate organ function.",
+                    "reason": "Current laboratory values are unavailable.",
+                }],
+            },
+        }]}
+        paths = {unit["path"] for unit in collect_units(payload)}
+        self.assertIn("trials/0/gating/inclusion_evaluation/0/criterion", paths)
+        self.assertIn("trials/0/gating/inclusion_evaluation/0/reason", paths)
+        self.assertNotIn("trials/0/gating/satisfied/0", paths)
+        self.assertNotIn("trials/0/gating/pending/0", paths)
+        self.assertNotIn("trials/0/gating/exclusion_reasons/0", paths)
 
     def test_only_china_patient_enters_translation(self):
         china = {"patient": {"country": "China"}, "language": "zh-CN"}
@@ -155,6 +216,15 @@ class ReportTranslationTests(unittest.TestCase):
         }
         with mock.patch.dict(os.environ, {"TRANSLATION_MODE": "required"}, clear=True):
             with self.assertRaisesRegex(ValueError, "requires"):
+                maybe_translate_report(payload, cache_path=Path("translation-cache.json"))
+
+    def test_china_translation_is_required_by_default(self):
+        payload = {
+            "patient": {"country": "China"}, "language": "zh-CN",
+            "trials": [{"gating": {"rationale": "English clinical rationale"}}],
+        }
+        with mock.patch.dict(os.environ, {}, clear=True):
+            with self.assertRaisesRegex(ValueError, "requires TRANSLATION_MODEL_PROVIDER"):
                 maybe_translate_report(payload, cache_path=Path("translation-cache.json"))
 
     def test_required_translation_needs_no_api_when_no_residual_exists(self):
@@ -193,6 +263,19 @@ class ReportTranslationTests(unittest.TestCase):
         batches = translation_batches(units, max_units=3, max_characters=130)
         self.assertEqual([len(batch) for batch in batches], [2, 2, 1])
 
+    def test_small_translation_remainder_is_audited_as_accepted_partial(self):
+        from report_translation import translation_completion_status
+
+        with mock.patch.dict(os.environ, {
+            "TRANSLATION_ACCEPTABLE_REMAINING_UNITS": "100",
+            "TRANSLATION_ACCEPTABLE_REMAINING_RATIO": "0.10",
+        }, clear=False):
+            self.assertEqual(
+                translation_completion_status(1089, 83), "accepted_partial"
+            )
+            self.assertEqual(translation_completion_status(1089, 101), "incomplete")
+            self.assertEqual(translation_completion_status(1089, 0), "complete")
+
     def test_truncated_translation_batch_is_split_without_losing_units(self):
         units = [
             {"id": f"u{index}", "path": str(index), "source": "source"}
@@ -227,6 +310,25 @@ class ReportTranslationTests(unittest.TestCase):
         unit = {"id": "u0", "path": "0", "source": "source"}
         translated = translate_batch_resilient([unit], lambda batch: {})
         self.assertEqual(translated, {})
+
+    def test_partial_translation_is_kept_and_only_missing_ids_are_retried(self):
+        units = [
+            {"id": "u0", "path": "0", "source": "first"},
+            {"id": "u1", "path": "1", "source": "second"},
+        ]
+        calls = []
+        progress = []
+
+        def translate_once(batch):
+            calls.append([unit["id"] for unit in batch])
+            return {batch[0]["id"]: "translated"}
+
+        translated = translate_batch_resilient(
+            units, translate_once, lambda rows: progress.append(set(rows)),
+        )
+        self.assertEqual(set(translated), {"u0", "u1"})
+        self.assertEqual(calls, [["u0", "u1"], ["u1"]])
+        self.assertEqual(progress, [{"u0"}, {"u1"}])
 
     def test_malformed_json_batch_is_split(self):
         units = [{"id": "u0", "path": "0", "source": "first"},

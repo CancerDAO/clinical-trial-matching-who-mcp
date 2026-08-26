@@ -33,19 +33,65 @@ TRANSLATABLE_KEYS = {
     "applies_because", "patient_eligibility_note", "head_to_head_summary",
     "comparison_limitation", "mechanism", "flag", "evidence", "trial_title",
     "display_title", "selection_basis", "reasons", "discussion_recommendation",
-    "consequences_of_skipping",
+    "consequences_of_skipping", "patient_display_rationale",
 }
 PROTECTED = re.compile(
     r"(?:https?://\S+|(?i:NCT)\d{8}|(?i:ChiCTR)\w+|"
     r"[A-Za-z]{1,15}-?\d[A-Za-z0-9.-]*|[A-Z]{2,10}|\d+(?:\.\d+)?%?)"
 )
 CJK = re.compile(r"[\u3400-\u9fff]")
+ELIGIBILITY_PRIORITY_TERMS = (
+    "cancer", "tumor", "tumour", "carcinoma", "histolog", "mutation", "biomarker",
+    "kras", "egfr", "her2", "msi", "mmr", "prior treatment", "previous treatment",
+    "washout", "ecog", "performance status", "organ function", "liver", "renal",
+    "kidney", "cardiac", "infection", "brain metast", "age",
+)
+
+
+def patient_visible_evaluations(gating: dict[str, Any]) -> list[dict[str, Any]]:
+    """Select a concise, deterministic patient view; retain the full audit in JSON."""
+    rows = [
+        row for row in (
+            (gating.get("inclusion_evaluation") or [])
+            + (gating.get("exclusion_evaluation") or [])
+        ) if isinstance(row, dict)
+    ]
+    maximum = max(1, int(os.environ.get("REPORT_ELIGIBILITY_MAX_ROWS", "6")))
+    status_rank = {
+        "potential_conflict": 0, "failed": 0, "not_met": 0,
+        "needs_confirmation": 1, "missing": 1, "unknown": 2,
+        "likely_met": 3, "met": 4,
+    }
+
+    def rank(item: tuple[int, dict[str, Any]]) -> tuple[int, int, int]:
+        index, row = item
+        text = " ".join(str(row.get(key) or "") for key in ("criterion", "reason", "evidence")).casefold()
+        clinical_priority = 0 if any(term in text for term in ELIGIBILITY_PRIORITY_TERMS) else 1
+        return status_rank.get(str(row.get("status") or "unknown"), 2), clinical_priority, index
+
+    return [row for _, row in sorted(enumerate(rows), key=rank)[:maximum]]
 
 
 def needs_translation(value: str) -> bool:
     ascii_letters = sum(character.isascii() and character.isalpha() for character in value)
     cjk_characters = len(CJK.findall(value))
     return ascii_letters >= 4 and ascii_letters > cjk_characters
+
+
+def concise_patient_text(value: Any, limit: int = 240) -> str:
+    text = " ".join(str(value or "").split())
+    if len(text) <= limit:
+        return text
+    sentences = re.split(r"(?<=[.!?。！？])\s+", text)
+    selected = ""
+    for sentence in sentences:
+        candidate = f"{selected} {sentence}".strip()
+        if len(candidate) > limit:
+            break
+        selected = candidate
+    if selected:
+        return selected
+    return text[:limit].rsplit(" ", 1)[0].rstrip(" ,;:") + "..."
 
 
 def contains_narrative_language(value: str) -> bool:
@@ -56,6 +102,22 @@ def contains_narrative_language(value: str) -> bool:
 
 def protected_facts(value: str) -> set[str]:
     return {match.rstrip(".,;:)") for match in PROTECTED.findall(value)}
+
+
+def translation_completion_status(requested: int, remaining: int) -> str:
+    """Classify partial translation without weakening identifier protection."""
+    if remaining <= 0:
+        return "complete"
+    maximum_units = max(0, int(os.environ.get(
+        "TRANSLATION_ACCEPTABLE_REMAINING_UNITS", "100",
+    )))
+    maximum_ratio = min(1.0, max(0.0, float(os.environ.get(
+        "TRANSLATION_ACCEPTABLE_REMAINING_RATIO", "0.10",
+    ))))
+    ratio = remaining / max(1, requested)
+    if remaining <= maximum_units and ratio <= maximum_ratio:
+        return "accepted_partial"
+    return "incomplete"
 
 
 def mask_protected_facts(value: str) -> tuple[str, dict[str, str]]:
@@ -97,13 +159,25 @@ def translation_batches(
 
 def translate_batch_resilient(
     batch: list[dict[str, str]], translate_once: Any,
+    on_progress: Callable[[dict[str, str]], None] | None = None,
 ) -> dict[str, str]:
-    """Retry an incomplete translation as smaller independent batches."""
+    """Keep valid rows and retry only missing translations in smaller batches."""
     try:
         translated = translate_once(batch)
         expected = {unit["id"] for unit in batch}
-        if expected.issubset(translated):
+        valid = {unit_id: text for unit_id, text in translated.items() if unit_id in expected}
+        if valid and on_progress:
+            on_progress(valid)
+        missing = [unit for unit in batch if unit["id"] not in valid]
+        if not missing:
             return translated
+        if len(batch) == 1:
+            return valid
+        if len(missing) < len(batch):
+            return {
+                **valid,
+                **translate_batch_resilient(missing, translate_once, on_progress),
+            }
         raise RuntimeError("Translation response omitted one or more units")
     except (RuntimeError, ValueError) as exc:
         recoverable = (
@@ -117,8 +191,8 @@ def translate_batch_resilient(
             return {}
         midpoint = len(batch) // 2
         return {
-            **translate_batch_resilient(batch[:midpoint], translate_once),
-            **translate_batch_resilient(batch[midpoint:], translate_once),
+            **translate_batch_resilient(batch[:midpoint], translate_once, on_progress),
+            **translate_batch_resilient(batch[midpoint:], translate_once, on_progress),
         }
 
 
@@ -156,8 +230,8 @@ def prepare_translation_work(
 
 def translation_batch_limits(_model: str = "") -> tuple[int, int]:
     """Return provider-neutral limits; operators may tune them per API."""
-    default_units = "200"
-    default_characters = "16000"
+    default_units = "60"
+    default_characters = "6000"
     return (
         max(1, int(os.environ.get("TRANSLATION_BATCH_MAX_UNITS", default_units))),
         max(200, int(os.environ.get(
@@ -169,8 +243,49 @@ def translation_batch_limits(_model: str = "") -> tuple[int, int]:
 def collect_units(payload: dict[str, Any]) -> list[dict[str, str]]:
     """Collect only residual English prose after native-language generation."""
     units: list[dict[str, str]] = []
+    source_position = 0
+
+    def hidden_from_patient_report(path: list[str]) -> bool:
+        if len(path) < 3 or path[0] != "trials" or not path[1].isdigit():
+            return False
+        trials = payload.get("trials") or []
+        index = int(path[1])
+        if index >= len(trials):
+            return False
+        verdict = ((trials[index].get("gating") or {}).get("verdict") or "")
+        if path[-1] == "rationale" and trials[index].get("patient_display_rationale"):
+            return True
+        if verdict != "exclude":
+            gating = trials[index].get("gating") or {}
+            if "inclusion_evaluation" in path or "exclusion_evaluation" in path:
+                collection_name = (
+                    "inclusion_evaluation" if "inclusion_evaluation" in path
+                    else "exclusion_evaluation"
+                )
+                position = path.index(collection_name)
+                if len(path) > position + 1 and path[position + 1].isdigit():
+                    rows = gating.get(collection_name) or []
+                    row_index = int(path[position + 1])
+                    if row_index < len(rows) and rows[row_index] not in patient_visible_evaluations(gating):
+                        return True
+            has_evaluations = bool(
+                (gating.get("inclusion_evaluation") or [])
+                or (gating.get("exclusion_evaluation") or [])
+            )
+            # The renderer prefers structured criterion rows when available;
+            # their summary lists would repeat the same eligibility findings.
+            return has_evaluations and any(part in {
+                "satisfied", "pending", "exclusion_reasons",
+            } for part in path[2:])
+        # Excluded cards show the concise exclusion basis. Their complete
+        # criterion audit remains in pipeline.json and is not rendered twice.
+        return any(part in {
+            "inclusion_evaluation", "exclusion_evaluation", "satisfied", "pending",
+            "exclusion_reasons",
+        } for part in path[2:])
 
     def walk(value: Any, path: list[str], enabled: bool = False) -> None:
+        nonlocal source_position
         if isinstance(value, dict):
             for key, child in value.items():
                 walk(child, path + [str(key)], str(key) in TRANSLATABLE_KEYS)
@@ -178,7 +293,10 @@ def collect_units(payload: dict[str, Any]) -> list[dict[str, str]]:
             for index, child in enumerate(value):
                 walk(child, path + [str(index)], enabled)
         elif enabled and isinstance(value, str) and value.strip() and needs_translation(value):
-            units.append({"id": f"u{len(units)}", "path": "/".join(path), "source": value})
+            unit_id = f"u{source_position}"
+            source_position += 1
+            if not hidden_from_patient_report(path):
+                units.append({"id": unit_id, "path": "/".join(path), "source": value})
 
     walk(payload, [])
     return units
@@ -213,6 +331,9 @@ def apply_units(payload: dict[str, Any], units: list[dict[str, str]], translatio
         "detected_residual_units": len(units),
         "applied_units": applied_units,
         "remaining_units": len(units) - applied_units,
+        "completion_status": translation_completion_status(
+            len(units), len(units) - applied_units,
+        ),
     }
     return result
 
@@ -260,19 +381,24 @@ def translate_with_configured_model(
         max_units=max_units,
         max_characters=max_characters,
     )
-    concurrency = max(1, min(int(os.environ.get("TRANSLATION_MODEL_CONCURRENCY", "3")), 8))
-    with concurrent.futures.ThreadPoolExecutor(max_workers=concurrency) as executor:
-        futures = [
-            executor.submit(translate_batch_resilient, batch, translate_once)
-            for batch in batches
-        ]
-        for future in concurrent.futures.as_completed(futures):
-            batch_translations = future.result()
+    concurrency = max(1, min(int(os.environ.get("TRANSLATION_MODEL_CONCURRENCY", "6")), 8))
+    checkpoint_lock = __import__("threading").Lock()
+
+    def record_progress(batch_translations: dict[str, str]) -> None:
+        with checkpoint_lock:
             for unit_id, text in batch_translations.items():
                 for alias in aliases.get(unit_id, [unit_id]):
                     translated[alias] = text
             if checkpoint:
-                checkpoint(translated)
+                checkpoint(dict(translated))
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=concurrency) as executor:
+        futures = [
+            executor.submit(translate_batch_resilient, batch, translate_once, record_progress)
+            for batch in batches
+        ]
+        for future in concurrent.futures.as_completed(futures):
+            future.result()
     return translated
 
 
@@ -315,6 +441,9 @@ def apply_cached_residual_translations(
     result = apply_units(payload, units, translated)
     result["translation_provenance"]["mode"] = "residual_translation_cache"
     result["translation_provenance"]["remaining_units"] = len(pending)
+    result["translation_provenance"]["completion_status"] = (
+        translation_completion_status(len(units), len(pending))
+    )
     return result, len(pending)
 
 
@@ -324,7 +453,8 @@ def maybe_translate_report(
     if not is_china_patient(payload.get("patient") or {}):
         payload["language"] = "en"
         return payload
-    mode = os.environ.get("TRANSLATION_MODE", "auto").strip().casefold()
+    # A China report must not silently become a mixed-language formal deliverable.
+    mode = os.environ.get("TRANSLATION_MODE", "required").strip().casefold()
     if mode not in {"auto", "required", "off"}:
         raise ValueError("TRANSLATION_MODE must be auto, required, or off")
     if mode == "off":

@@ -137,6 +137,7 @@ def _validate_jobs(jobs: dict[str, Any]) -> None:
 
 
 def _validate_batch_output(batch: dict[str, Any], output: Path) -> dict[str, Any]:
+    from clinical_fact_grounding import correct_analysis_clinical_facts
     payload = load_json(output)
     if (
         isinstance(payload, dict)
@@ -165,6 +166,16 @@ def _validate_batch_output(batch: dict[str, Any], output: Path) -> dict[str, Any
     stage = str(batch.get("stage") or "").strip()
     patient = batch.get("patient") or {}
     if stage:
+        corrected_rows = [
+            correct_analysis_clinical_facts(
+                row, allow_verdict_change=stage == "gater"
+            )
+            for row in rows
+        ]
+        if corrected_rows != rows:
+            payload["analyzed_trials"] = corrected_rows
+            rows = corrected_rows
+            write_json_atomic(output, payload)
         for row in rows:
             validate_stage_item(row, stage, patient)
     return payload

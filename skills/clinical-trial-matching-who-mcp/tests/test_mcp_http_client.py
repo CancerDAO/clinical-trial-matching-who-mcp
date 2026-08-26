@@ -222,6 +222,11 @@ class StreamableHttpClientTests(unittest.TestCase):
         with self.assertRaisesRegex(McpClientError, "requires HTTPS"):
             JsonRpcHttpMcpClient("http://mcp.example.org/mcp", "secret")
 
+    def test_plain_http_remote_host_requires_explicit_operator_authorization(self):
+        with patch.dict("os.environ", {"WHO_MCP_ALLOW_INSECURE_HTTP": "1"}):
+            client = JsonRpcHttpMcpClient("http://43.163.116.103/mcp", "secret")
+        self.assertEqual(client.url, "http://43.163.116.103/mcp")
+
     def test_invalid_detail_concurrency_is_identifiable(self):
         with patch.dict("os.environ", {"MCP_DETAIL_CONCURRENCY": "many"}):
             with self.assertRaisesRegex(McpClientError, "must be an integer"):

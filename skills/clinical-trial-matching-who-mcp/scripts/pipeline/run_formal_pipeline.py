@@ -22,10 +22,28 @@ from full_pipeline import (
 from model_batch_executor import execute_batches, execute_decision
 from publication_prefetch import enrich_deep_jobs_file
 from io_utils import write_json_atomic
+from model_preflight import apply_model_routes, run_model_preflight
 
 
 STATE_NAME = "formal-run-state.json"
 LOCK_NAME = "formal-execute.lock"
+
+
+def _apply_prepare_model_args(args: argparse.Namespace) -> bool:
+    """Expose explicit CLI model choices to preflight and persist them as routes."""
+    provider = str(getattr(args, "model_provider", "") or "").strip()
+    if provider:
+        os.environ["MODEL_PROVIDER"] = provider
+    base_url = str(getattr(args, "model_base_url", "") or "").strip()
+    if base_url:
+        os.environ["MODEL_BASE_URL"] = base_url
+    configured = False
+    for stage in ("gater", "deep", "decision", "translation"):
+        model = str(getattr(args, f"{stage}_model", "") or "").strip()
+        if model:
+            os.environ[f"{stage.upper()}_MODEL_NAME"] = model
+            configured = True
+    return configured
 
 
 def _stage_models(fallback: str = "") -> dict[str, str]:
@@ -120,6 +138,13 @@ def _compact_decision_trial(
     mechanism = source.get("mechanism_category") or {}
     feasibility = source.get("feasibility") or {}
     redundancy = efficacy.get("redundancy_with_existing_options") or {}
+    from clinical_fact_grounding import partition_resolvable_blockers
+    hard_failures, resolvable_pending = partition_resolvable_blockers(
+        gating.get("blockers_failed") or [],
+        verdict=str(gating.get("verdict") or ""),
+    )
+    pending_blockers = (gating.get("blockers_pending") or []) + resolvable_pending
+    satisfied_blockers = gating.get("blockers_satisfied") or []
     return {
         "trial_id": analysis.get("trial_id"),
         "title": source.get("title") or source.get("scientific_title") or "",
@@ -141,9 +166,12 @@ def _compact_decision_trial(
         "gating": {
             "verdict": gating.get("verdict"),
             "confidence": gating.get("confidence"),
-            "blockers_satisfied": (gating.get("blockers_satisfied") or [])[:3],
-            "blockers_failed": (gating.get("blockers_failed") or [])[:3],
-            "blockers_pending": (gating.get("blockers_pending") or [])[:3],
+            "blockers_satisfied": satisfied_blockers[:3],
+            "blockers_satisfied_count": len(satisfied_blockers),
+            "blockers_failed": hard_failures[:3],
+            "blockers_failed_count": len(hard_failures),
+            "blockers_pending": pending_blockers[:3],
+            "blockers_pending_count": len(pending_blockers),
             "hard_rules_triggered": gating.get("hard_rules_triggered") or [],
             "rationale": _limited_text(gating.get("rationale"), 250),
         },
@@ -180,12 +208,21 @@ def _decision_input(
     gating_trials: list[dict[str, Any]],
     deep_trials: list[dict[str, Any]],
     deep_jobs: dict[str, Any],
+    source_trials: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
+    from clinical_fact_grounding import correct_analysis_clinical_facts
     combined = combine_analysis_stages(gating_trials, deep_trials)
     source_by_id = {
         str(trial.get("id") or ""): trial
-        for batch in deep_jobs.get("batches") or []
-        for trial in batch.get("trials") or []
+        for trial in (
+            source_trials
+            if source_trials is not None
+            else [
+                row
+                for batch in deep_jobs.get("batches") or []
+                for row in batch.get("trials") or []
+            ]
+        )
     }
     inventory = {"match": 0, "conditional": 0, "exclude": 0}
     for item in gating_trials:
@@ -193,7 +230,10 @@ def _decision_input(
         if verdict in inventory:
             inventory[verdict] += 1
     candidates = [
-        _compact_decision_trial(item, source_by_id.get(str(item.get("trial_id") or ""), {}))
+        _compact_decision_trial(
+            correct_analysis_clinical_facts(item),
+            source_by_id.get(str(item.get("trial_id") or ""), {}),
+        )
         for item in combined
         if (item.get("gating") or {}).get("verdict") in {"match", "conditional"}
     ]
@@ -264,6 +304,16 @@ def prepare_formal(args: argparse.Namespace) -> dict[str, Any]:
             "search terms to WHO ICTRP; live verification sends recalled trial IDs to "
             "allowlisted primary registries."
         )
+    explicit_stage_models = _apply_prepare_model_args(args)
+    routing = None
+    if bool(
+        getattr(args, "model_preflight", False)
+        or getattr(args, "auto_select_models", False)
+        or explicit_stage_models
+    ):
+        routing = run_model_preflight(
+            auto_select=bool(getattr(args, "auto_select_models", False))
+        )
     result = prepare(
         patient_path=Path(args.patient),
         plan_path=Path(args.plan) if args.plan else None,
@@ -285,9 +335,13 @@ def prepare_formal(args: argparse.Namespace) -> dict[str, Any]:
         report_language_override=getattr(args, "report_language", None),
         patient_country_override=getattr(args, "patient_country", None),
     )
+    search_stats = result.get("search_stats") or {}
+    portal_delta = result.get("portal_delta") or {}
+    live_registry = result.get("live_registry_audit") or {}
+    retrieval_complete = bool(result.get("retrieval_complete"))
     state = {
         "schema_version": "formal-pipeline-state-v1",
-        "stage": "gater_pending",
+        "stage": "gater_pending" if retrieval_complete else "retrieval_incomplete",
         "run_dir": str(run_dir),
         "patient_path": result.get(
             "normalized_patient_path", str(Path(args.patient).resolve())
@@ -307,8 +361,34 @@ def prepare_formal(args: argparse.Namespace) -> dict[str, Any]:
         "recall_count": len(result["all_verified_trials"]),
         "hard_excluded_count": len(result.get("hard_excluded_trials") or []),
         "gater_expected_count": len(result["analysis_candidate_ids"]),
-        "next_action": "Complete every gater batch listed in analysis_jobs.json.",
+        "retrieval_audit": {
+            "complete": retrieval_complete,
+            "global_truncated": bool(search_stats.get("global_truncated")),
+            "query_truncation_count": int(
+                search_stats.get("query_truncation_count") or 0
+            ),
+            "portal_delta_status": str(portal_delta.get("status") or "not_executed"),
+            "portal_delta_trial_count": int(portal_delta.get("returned") or 0),
+            "live_registry_attempted": int(live_registry.get("attempted") or 0),
+            "live_registry_reachable": int(live_registry.get("reachable") or 0),
+            "live_registry_active": int(live_registry.get("active") or 0),
+            "live_registry_inactive": int(live_registry.get("inactive") or 0),
+            "live_registry_unknown": int(live_registry.get("unknown") or 0),
+            "live_registry_errors": int(live_registry.get("errors") or 0),
+        },
+        "next_action": (
+            "Complete every gater batch listed in analysis_jobs.json."
+            if retrieval_complete
+            else "Retrieval was incomplete; do not execute model analysis. Start a new run."
+        ),
     }
+    if routing:
+        routing_path = run_dir / "model-routing.json"
+        write_json_atomic(routing_path, routing)
+        state["model_routing_path"] = str(routing_path.resolve())
+        state["stage_models"] = {
+            stage: route["model"] for stage, route in routing["routes"].items()
+        }
     _save_state(run_dir, state)
     return state
 
@@ -418,6 +498,8 @@ def finalize_formal(run_dir: Path) -> dict[str, Any]:
     state = _load_state(run_dir)
     if state["stage"] != "analysis_merged":
         raise ValueError(f"finalize is not allowed from stage {state['stage']}")
+    if state.get("model_routing_path"):
+        apply_model_routes(load_json(Path(state["model_routing_path"])))
     result = finalize(
         prepared_path=Path(state["prepared_path"]),
         analysis_path=Path(state["analysis_bundle_path"]),
@@ -468,7 +550,14 @@ def _execute_formal_unlocked(
     run_dir: Path, *, model: str, timeout: float, retries: int
 ) -> dict[str, Any]:
     state = _load_state(run_dir)
-    stage_models = _stage_models(model)
+    routing_path = state.get("model_routing_path")
+    routed_models = {}
+    if routing_path:
+        routed_models = apply_model_routes(load_json(Path(routing_path)))
+    stage_models = {
+        **_stage_models(model),
+        **{stage: name for stage, name in routed_models.items() if stage != "translation"},
+    }
     state["stage_models"] = stage_models
     _save_state(run_dir, state)
     if state["stage"] == "gater_pending":
@@ -492,7 +581,12 @@ def _execute_formal_unlocked(
         interim = run_dir / "decision-analysis-input.json"
         write_json_atomic(
             interim,
-            _decision_input(gater, deep, load_json(Path(state["deep_jobs_path"]))),
+            _decision_input(
+                gater,
+                deep,
+                load_json(Path(state["deep_jobs_path"])),
+                load_json(Path(state["prepared_path"])).get("analysis_candidates") or [],
+            ),
         )
         decision = run_dir / "decision_report.json"
         execute_decision(
@@ -572,6 +666,34 @@ def main() -> None:
             "operator configuration use EXTERNAL_REGISTRY_ACCESS_AUTHORIZED=1."
         ),
     )
+    prepare_parser.add_argument(
+        "--model-preflight", action="store_true",
+        help=(
+            "Before retrieval, send one tiny contract probe to each configured stage model; "
+            "persist the successful non-secret routing for execute/finalize."
+        ),
+    )
+    prepare_parser.add_argument(
+        "--auto-select-models", action="store_true",
+        help=(
+            "Select stage models from *_MODEL_CANDIDATES, or discover them from the "
+            "configured provider when no model name is supplied; implies model preflight."
+        ),
+    )
+    prepare_parser.add_argument(
+        "--model-provider",
+        choices=("openai", "anthropic", "openai-compatible", "glm", "minimax"),
+        help="Provider shared by stage models; the API key remains an environment variable.",
+    )
+    prepare_parser.add_argument(
+        "--model-base-url",
+        help="HTTPS API base URL shared by stage models and persisted in the tested route.",
+    )
+    for stage in ("gater", "deep", "decision", "translation"):
+        prepare_parser.add_argument(
+            f"--{stage}-model",
+            help=f"Explicit {stage} model. Supplying any stage model implies model preflight.",
+        )
 
     for command in ("status", "deep-jobs", "finalize"):
         command_parser = sub.add_parser(command)
@@ -613,7 +735,8 @@ def main() -> None:
             run_dir, Path(args.decision), args.model, args.output_language
         )
     elif args.command == "execute":
-        if not args.model:
+        state = _load_state(run_dir)
+        if not args.model and not state.get("model_routing_path"):
             raise ValueError("--model or MODEL_NAME is required")
         result = execute_formal(
             run_dir, model=args.model, timeout=args.timeout_seconds, retries=args.retries

@@ -1,6 +1,7 @@
 """Normalize legacy patient JSON or a Cancer Buddy archive into one contract."""
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import Any
 
@@ -16,6 +17,10 @@ CB_REQUIRED = (
     "comorbidities.json",
 )
 CB_OPTIONAL = ("readiness.json", "missing_items.json")
+CONFIRMED_FIELD_KEYS = {
+    "age", "sex", "cancer_type", "disease_stage", "stage", "mutations",
+    "treatment_lines_completed", "prior_therapies", "ecog", "biomarkers",
+}
 
 
 def _settled(item: dict[str, Any]) -> bool:
@@ -28,6 +33,90 @@ def _simple_results(items: list[dict[str, Any]]) -> dict[str, Any]:
         if _settled(item) and str(item.get("label") or "").strip():
             result[str(item["label"]).strip()] = item.get("value")
     return result
+
+
+def _confirmed_fields(context: dict[str, Any]) -> dict[str, Any]:
+    raw = context.get("confirmed_fields") or {}
+    if not isinstance(raw, dict):
+        raise ValueError("matching_context.confirmed_fields must be an object")
+    return {
+        key: value for key, value in raw.items()
+        if key in CONFIRMED_FIELD_KEYS and value not in (None, "", [])
+    }
+
+
+def _string_list(value: Any, field: str) -> list[str]:
+    if isinstance(value, str):
+        values = [value]
+    elif isinstance(value, list):
+        values = value
+    else:
+        raise ValueError(f"confirmed field {field} must be a string or array")
+    return list(dict.fromkeys(str(item).strip() for item in values if str(item).strip()))
+
+
+def _treatment_lines(value: Any) -> int:
+    if isinstance(value, bool):
+        raise ValueError("confirmed field treatment_lines_completed must be an integer")
+    if isinstance(value, int):
+        lines = value
+    elif isinstance(value, float) and value.is_integer():
+        lines = int(value)
+    else:
+        text = str(value or "").strip()
+        patterns = (
+            r"^(\d+)$",
+            r"^(?:已完成|完成)\s*(\d+)\s*线(?:治疗)?$",
+            r"^(\d+)\s*线(?:治疗)?$",
+            r"^(?:completed\s+)?(\d+)\s+(?:treatment\s+)?lines?$",
+        )
+        match = next(
+            (candidate for pattern in patterns
+             if (candidate := re.fullmatch(pattern, text, flags=re.IGNORECASE))),
+            None,
+        )
+        if match is None:
+            raise ValueError(
+                "confirmed field treatment_lines_completed must be one "
+                "unambiguous non-negative integer"
+            )
+        lines = int(match.group(1))
+    if lines < 0:
+        raise ValueError("confirmed field treatment_lines_completed cannot be negative")
+    return lines
+
+
+def _apply_confirmed_fields(
+    patient: dict[str, Any], context: dict[str, Any]
+) -> list[str]:
+    confirmed = _confirmed_fields(context)
+    applied: list[str] = []
+    scalar_map = {
+        "age": "age", "sex": "sex", "cancer_type": "cancer_type",
+        "disease_stage": "disease_stage", "stage": "stage", "ecog": "ecog",
+    }
+    for source, target in scalar_map.items():
+        if source in confirmed:
+            patient[target] = confirmed[source]
+            applied.append(source)
+    for field, target in (
+        ("mutations", "mutations"), ("prior_therapies", "prior_therapies"),
+    ):
+        if field in confirmed:
+            patient[target] = _string_list(confirmed[field], field)
+            applied.append(field)
+    if "treatment_lines_completed" in confirmed:
+        patient["treatment_lines_completed"] = _treatment_lines(
+            confirmed["treatment_lines_completed"]
+        )
+        applied.append("treatment_lines_completed")
+    if "biomarkers" in confirmed:
+        value = confirmed["biomarkers"]
+        patient["biomarkers_known"] = (
+            value if isinstance(value, dict) else {"patient_confirmed": value}
+        )
+        applied.append("biomarkers")
+    return applied
 
 
 def _location(profile: dict[str, Any], root: Path) -> tuple[dict[str, Any], str]:
@@ -76,8 +165,9 @@ def _validate_cancer_buddy(root: Path, documents: dict[str, dict[str, Any]]) -> 
     if len(codes) != 1:
         raise ValueError(f"Cancer Buddy patient_code mismatch in {root}: {sorted(codes)}")
     for name in CB_REQUIRED[1:]:
-        if str(documents[name].get("schema_version") or "") != "2":
-            raise ValueError(f"{name} must use schema_version 2")
+        schema_version = str(documents[name].get("schema_version") or "")
+        if schema_version.split(".", 1)[0] != "2":
+            raise ValueError(f"{name} must use a compatible schema_version 2.x")
     return next(iter(codes))
 
 
@@ -95,6 +185,8 @@ def normalize_cancer_buddy(root: Path) -> tuple[dict[str, Any], dict[str, Any]]:
     comorbid = documents["comorbidities.json"]
     labs = documents["labs.json"]
     readiness = documents.get("readiness.json") or {}
+    context_path = root / "matching_context.json"
+    context = load_json(context_path) if context_path.exists() else {}
     demographics = summary.get("demographics") or {}
     diagnosis = summary.get("diagnosis") or {}
     current = summary.get("current_status") or {}
@@ -235,6 +327,7 @@ def normalize_cancer_buddy(root: Path) -> tuple[dict[str, Any], dict[str, Any]]:
             "archive": str(root.resolve()),
         },
     }
+    confirmed_overrides = _apply_confirmed_fields(patient, context)
     required = ("patient_id", "country", "cancer_type")
     missing_required = [key for key in required if not patient.get(key)]
     if missing_required:
@@ -251,6 +344,10 @@ def normalize_cancer_buddy(root: Path) -> tuple[dict[str, Any], dict[str, Any]]:
         "unresolved_review_flag_count": len(unresolved_review_flags),
         "treatment_line_policy": (
             "Count only completed episodes with an explicit documented_line_label."
+        ),
+        "confirmed_field_overrides": confirmed_overrides,
+        "confirmed_field_source": (
+            str(context_path) if confirmed_overrides else ""
         ),
     }
     return patient, audit

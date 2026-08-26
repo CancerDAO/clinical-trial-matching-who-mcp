@@ -35,6 +35,27 @@ RESOURCE_LINK = re.compile(r"!?\[[^\]]*\]\(([^)]+)\)")
 RESOURCE_SUFFIXES = {".md", ".json"}
 
 
+def load_env_file(path: Path | None = None) -> None:
+    """Load an ignored local .env without overriding the invoking environment."""
+    candidate = path or Path(__file__).resolve().parents[4] / ".env"
+    if not candidate.is_file():
+        return
+    for raw_line in candidate.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        name, value = line.split("=", 1)
+        name = name.strip()
+        value = value.strip()
+        if value[:1] == value[-1:] and value.startswith(("'", '"')):
+            value = value[1:-1]
+        if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name):
+            os.environ.setdefault(name, value)
+
+
+load_env_file()
+
+
 def _env_float(name: str, default: float) -> float:
     try:
         return float(os.environ.get(name, str(default)))
@@ -50,10 +71,14 @@ def _env_int(name: str, default: int) -> int:
 
 
 def _stage_value(stage: str, name: str) -> str:
-    return (
-        os.environ.get(f"{stage.upper()}_{name}", "").strip()
-        if stage else ""
-    ) or os.environ.get(name, "").strip()
+    prefixes = [stage.upper()] if stage else []
+    if stage.casefold() == "translation":
+        prefixes.extend(["DECISION", "DEEP", "GATER"])
+    for prefix in prefixes:
+        value = os.environ.get(f"{prefix}_{name}", "").strip()
+        if value:
+            return value
+    return os.environ.get(name, "").strip()
 
 
 def _configuration(stage: str = "") -> tuple[str, Provider, str, str, str]:
