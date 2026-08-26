@@ -45,7 +45,7 @@ from mcp_stdio_client import run_who_workflow
 from mechanism_categories import CATEGORY_ORDER, classify_mechanism
 from registry_presentation import assess_country_evidence, patient_facing_title, resolved_trial_url
 from search_plan import (
-    build_baseline_search_plan, validate_search_plan,
+    build_baseline_search_plan, normalize_search_plan_for_patient, validate_search_plan,
     validate_search_plan_for_patient,
 )
 from who_mcp_adapter import merge_sources
@@ -483,6 +483,7 @@ def prepare(
         patient["report_language"] = report_language_override
         patient_input_audit["report_language_override"] = report_language_override
     plan = load_json(plan_path) if plan_path else build_baseline_search_plan(patient)
+    plan = normalize_search_plan_for_patient(plan, patient)
     errors = validate_search_plan(plan, require_full_coverage=True)
     errors.extend(validate_search_plan_for_patient(plan, patient))
     if errors:
@@ -639,6 +640,7 @@ def prepare(
         "database_as_of": mcp_payload["metadata"].get("database_as_of"),
         "search_stats": stats,
         "query_audit": query_audit,
+        "retrieval_resilience_audit": search.get("retrieval_resilience_audit") or {},
         "deduplication_audit": deduplication_audit,
         "portal_delta": portal_audit,
         "live_registry_audit": live_audit,

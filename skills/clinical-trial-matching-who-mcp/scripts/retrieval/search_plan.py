@@ -6,6 +6,8 @@ import os
 import re
 from typing import Any
 
+from disease_concepts import contains_cjk, resolve_disease_terms
+
 REQUIRED_DIMENSIONS = (
     "disease_biomarker", "pan_tumor", "combination_targets", "pathway_resistance",
     "named_drug", "cell_therapy", "immune", "chinese_registry_terms",
@@ -130,6 +132,37 @@ def compile_search_plan_for_mcp(plan: dict[str, Any]) -> dict[str, Any]:
     return compiled
 
 
+def normalize_search_plan_for_patient(
+    plan: dict[str, Any], patient: dict[str, Any]
+) -> dict[str, Any]:
+    """Normalize custom-plan disease anchors before WHO and portal execution."""
+    normalized = deepcopy(plan)
+    disease = resolve_disease_terms(
+        patient.get("cancer_type"), patient.get("search_terms") or {}
+    )
+    original = str(disease.get("original") or "").strip()
+    replacement = str(disease.get("primary_english") or "solid tumor").strip()
+    changed = 0
+    for group in normalized.get("keyword_groups") or []:
+        if _dimension(group) == "chinese_registry_terms":
+            continue
+        for query in group.get("queries") or []:
+            condition = str(query.get("condition") or "").strip()
+            term = str(query.get("term") or "").strip()
+            if condition and (contains_cjk(condition) or condition == original):
+                query["original_condition_language_value"] = condition
+                query["condition"] = replacement
+                changed += 1
+            if term and original and original in term:
+                query["original_term_language_value"] = term
+                query["term"] = term.replace(original, replacement)
+                changed += 1
+    audit = normalized.setdefault("generation_audit", {})
+    audit["disease_normalization"] = disease
+    audit["language_normalized_query_fields"] = changed
+    return normalized
+
+
 def generate_search_plan_prompt(patient_text: str) -> str:
     return f"""Create a strict JSON clinical-trial search plan for this oncology patient.
 Preserve all eight original recall branches. Every keyword group must include a `dimension`
@@ -161,6 +194,9 @@ def build_baseline_search_plan(patient: dict[str, Any]) -> dict[str, Any]:
         if str(value).strip()
     ]
     search_terms = patient.get("search_terms") or {}
+    disease = resolve_disease_terms(cancer, search_terms)
+    primary_disease = disease["primary_english"]
+    disease_aliases = disease["english_aliases"][:3]
     named_agents = [
         str(value).strip() for value in search_terms.get("named_agents") or []
         if str(value).strip()
@@ -190,7 +226,7 @@ def build_baseline_search_plan(patient: dict[str, Any]) -> dict[str, Any]:
     except ValueError as exc:
         raise ValueError("SEARCH_MAX_TERMS_PER_DIMENSION must be an integer") from exc
 
-    def queries(terms: list[str], condition: str | None = cancer) -> list[dict[str, Any]]:
+    def queries(terms: list[str], condition: str | None = primary_disease) -> list[dict[str, Any]]:
         unique: list[str] = []
         seen: set[str] = set()
         for value in terms:
@@ -204,11 +240,21 @@ def build_baseline_search_plan(patient: dict[str, Any]) -> dict[str, Any]:
             for term in unique[:max_terms]
         ]
 
+    def disease_queries(terms: list[str]) -> list[dict[str, Any]]:
+        anchors = queries(terms, None)
+        output: list[dict[str, Any]] = []
+        for alias in disease_aliases:
+            for item in anchors:
+                output.append({"condition": alias, "term": item["term"]})
+                if len(output) >= max_terms:
+                    return output
+        return output
+
     groups = [
         {
             "dimension": "disease_biomarker", "label": "1. Disease + exact biomarker",
             "source": "both",
-            "queries": queries(biomarker_terms or ["precision oncology"]),
+            "queries": disease_queries(biomarker_terms or ["precision oncology"]),
         },
         {
             "dimension": "pan_tumor", "label": "2. Pan-tumor biomarker recall",
@@ -243,9 +289,9 @@ def build_baseline_search_plan(patient: dict[str, Any]) -> dict[str, Any]:
         {
             "dimension": "chinese_registry_terms", "label": "8. Chinese registry terms",
             "source": "chictr",
-            "queries": queries(
-                chinese_terms or [f"{cancer} {anchor}"], None
-            ),
+            "queries": queries(chinese_terms or [
+                f"{alias} {anchor}" for alias in disease["registry_aliases"][:3]
+            ] or [f"{primary_disease} {anchor}"], None),
         },
     ]
     return {
@@ -263,10 +309,16 @@ def build_baseline_search_plan(patient: dict[str, Any]) -> dict[str, Any]:
             "mode": "deterministic_baseline",
             "max_terms_per_dimension": max_terms,
             "query_count": sum(len(group["queries"]) for group in groups),
-            "requires_human_review": not bool(named_agents and combinations and pathways),
+            "requires_human_review": (
+                disease["requires_human_review"]
+                or not bool(named_agents and combinations and pathways)
+            ),
+            "disease_normalization": disease,
             "limitations": (
                 "Named-agent, rational-combination, pathway, and Chinese synonym "
-                "recall is only exhaustive when matching_context.search_terms supplies them."
+                "recall is only exhaustive when matching_context.search_terms supplies them. "
+                "WHO queries use normalized English disease concepts; regional-registry "
+                "queries preserve source-language disease terms."
             ),
         },
     }

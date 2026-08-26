@@ -12,11 +12,12 @@ for relative in ("scripts/retrieval", "scripts/verification", "scripts/scoring",
     sys.path.insert(0, str(ROOT / relative))
 
 from feasibility import WEIGHTS, compute_feasibility
+from disease_concepts import resolve_disease_terms
 from html_renderer import render_html
 from mechanism_categories import classify_mechanism
 from search_plan import (
     build_baseline_search_plan, compile_search_plan_for_mcp,
-    search_plan_coverage, validate_search_plan,
+    normalize_search_plan_for_patient, search_plan_coverage, validate_search_plan,
     validate_search_plan_for_patient,
 )
 from who_mcp_adapter import build_mcp_requests, build_portal_delta_contract, merge_sources
@@ -24,6 +25,89 @@ from who_mcp_verifier import verify_batch
 
 
 class WhoMcpPipelineTests(unittest.TestCase):
+    def test_chinese_disease_uses_english_who_terms_and_local_registry_terms(self):
+        plan = build_baseline_search_plan({
+            "patient_id": "PT-CN", "cancer_type": "结直肠癌",
+            "mutations": ["KRAS G12C"],
+        })
+        disease_group = next(
+            group for group in plan["keyword_groups"]
+            if group["dimension"] == "disease_biomarker"
+        )
+        self.assertEqual(
+            [query["condition"] for query in disease_group["queries"]],
+            ["colorectal cancer", "colon cancer", "rectal cancer"],
+        )
+        self.assertTrue(all(
+            "结直肠癌" not in str(query.get("condition") or "")
+            for group in plan["keyword_groups"]
+            if group["dimension"] != "chinese_registry_terms"
+            for query in group["queries"]
+        ))
+        registry = next(
+            group for group in plan["keyword_groups"]
+            if group["dimension"] == "chinese_registry_terms"
+        )
+        self.assertEqual(registry["queries"][0]["term"], "结直肠癌 KRAS G12C")
+        audit = plan["generation_audit"]["disease_normalization"]
+        self.assertEqual(audit["concept_id"], "colorectal_cancer")
+        self.assertEqual(audit["source"], "deterministic_catalog")
+
+    def test_disease_catalog_is_generic_across_major_cancers(self):
+        cases = {
+            "非小细胞肺癌": "non-small cell lung cancer",
+            "乳腺癌": "breast cancer",
+            "胰腺导管腺癌": "pancreatic cancer",
+            "肝细胞癌": "hepatocellular carcinoma",
+            "多发性骨髓瘤": "multiple myeloma",
+        }
+        for source, expected in cases.items():
+            with self.subTest(source=source):
+                self.assertEqual(
+                    resolve_disease_terms(source)["primary_english"], expected
+                )
+
+    def test_rare_non_english_disease_accepts_explicit_english_alias(self):
+        resolved = resolve_disease_terms("罕见肿瘤亚型", {
+            "disease_aliases": ["rare tumor subtype"],
+        })
+        self.assertEqual(resolved["primary_english"], "rare tumor subtype")
+        self.assertEqual(resolved["source"], "explicit_patient_context")
+        self.assertFalse(resolved["requires_human_review"])
+
+    def test_unknown_non_english_disease_uses_audited_safe_fallback(self):
+        resolved = resolve_disease_terms("未收录罕见癌种")
+        self.assertEqual(resolved["primary_english"], "solid tumor")
+        self.assertTrue(resolved["requires_human_review"])
+
+    def test_custom_plan_is_language_normalized_before_execution(self):
+        source = {
+            "keyword_groups": [{
+                "dimension": "disease_biomarker",
+                "label": "Disease and biomarker",
+                "queries": [{"condition": "结直肠癌", "term": "KRAS G12C"}],
+            }, {
+                "dimension": "chinese_registry_terms",
+                "label": "Chinese registry",
+                "queries": [{"condition": None, "term": "结直肠癌 KRAS G12C"}],
+            }],
+        }
+        normalized = normalize_search_plan_for_patient(source, {
+            "cancer_type": "结直肠癌",
+        })
+        self.assertEqual(
+            normalized["keyword_groups"][0]["queries"][0]["condition"],
+            "colorectal cancer",
+        )
+        self.assertEqual(
+            normalized["keyword_groups"][1]["queries"][0]["term"],
+            "结直肠癌 KRAS G12C",
+        )
+        self.assertEqual(
+            normalized["generation_audit"]["language_normalized_query_fields"], 1
+        )
+        self.assertEqual(source["keyword_groups"][0]["queries"][0]["condition"], "结直肠癌")
+
     def test_baseline_plan_covers_all_eight_dimensions(self):
         plan = build_baseline_search_plan({
             "patient_id": "PT-1", "cancer_type": "pancreatic cancer",

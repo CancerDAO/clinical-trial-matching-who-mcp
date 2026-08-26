@@ -66,6 +66,11 @@ Cancer Buddy 目录可以包含 `profile.json`、`patient_summary.json`、`molec
 [matching_context.example.json](skills/clinical-trial-matching-who-mcp/examples/matching_context.example.json)。
 
 未提供 `--plan` 时，程序会从规范化患者数据生成可审计的八维基础搜索计划。
+患者可使用任意报告语言描述癌种；项目会保留原始文本用于报告和区域注册库检索，
+并在项目端确定性转换为 WHO/ClinicalTrials.gov 使用的英文疾病概念与常见同义词。
+罕见癌种可以通过 `matching_context.search_terms.disease_aliases` 提供英文别名，避免
+由平台或 MCP 服务猜测临床语义。若完整 MCP 检索首次返回零项，项目默认重试一次；
+可用 `MCP_ZERO_RESULT_RETRIES=0..2` 调整，重试结果写入检索审计。
 
 ## 配置 WHO MCP
 

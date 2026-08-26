@@ -1,6 +1,7 @@
 """Transport-neutral orchestration for the WHO MCP tool contract."""
 from __future__ import annotations
 
+import os
 from typing import Any, Callable, Protocol
 
 from search_plan import compile_search_plan_for_mcp
@@ -54,11 +55,27 @@ def execute_who_workflow(
 
     metadata = client.call_tool("database_metadata", {})
     executed_search_plan = compile_search_plan_for_mcp(search_plan)
-    search = client.call_tool("execute_search_plan", {
+    search_arguments = {
         "search_plan": executed_search_plan,
         "country": "",
         "max_per_query": max_per_query,
         "total_limit": total_limit,
+    }
+    search = client.call_tool("execute_search_plan", search_arguments)
+    try:
+        zero_result_retries = max(0, min(2, int(os.environ.get(
+            "MCP_ZERO_RESULT_RETRIES", "1"
+        ))))
+    except ValueError as exc:
+        raise McpClientError("MCP_ZERO_RESULT_RETRIES must be an integer") from exc
+    retry_count = 0
+    while not (search.get("results") or []) and retry_count < zero_result_retries:
+        retry_count += 1
+        search = client.call_tool("execute_search_plan", search_arguments)
+    search.setdefault("retrieval_resilience_audit", {})
+    search["retrieval_resilience_audit"].update({
+        "zero_result_retry_count": retry_count,
+        "zero_result_after_retry": not bool(search.get("results") or []),
     })
     stats = search.get("search_stats") or {}
     audit = search.get("query_audit") or []
