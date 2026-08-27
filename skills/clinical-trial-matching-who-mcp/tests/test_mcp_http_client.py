@@ -25,6 +25,8 @@ class FakeMcpHandler(BaseHTTPRequestHandler):
     max_active_details = 0
     saw_session_header = False
     transient_failures_remaining = 0
+    empty_searches_remaining = 0
+    search_calls = 0
 
     def log_message(self, format, *args):
         return
@@ -103,14 +105,19 @@ class FakeMcpHandler(BaseHTTPRequestHandler):
         if name == "database_metadata":
             content = {"database_as_of": "2026-07-16T00:00:00+00:00"}
         elif name == "execute_search_plan":
-            content = {
+            type(self).search_calls += 1
+            if type(self).empty_searches_remaining:
+                type(self).empty_searches_remaining -= 1
+                content = {"results": [], "search_stats": {}}
+            else:
+                content = {
                 "results": [
                     {"id": "NCT1", "primary_registry_id": "NCT1"},
                     {"id": "NCT2", "primary_registry_id": "NCT2"},
                     {"id": "NCT3", "primary_registry_id": "NCT3"},
                 ],
                 "search_stats": {},
-            }
+                }
         elif name == "get_trial":
             registry_id = message["params"]["arguments"]["registry_id"]
             with self.lock:
@@ -152,6 +159,8 @@ class StreamableHttpClientTests(unittest.TestCase):
         FakeMcpHandler.max_active_details = 0
         FakeMcpHandler.saw_session_header = False
         FakeMcpHandler.transient_failures_remaining = 0
+        FakeMcpHandler.empty_searches_remaining = 0
+        FakeMcpHandler.search_calls = 0
 
     def test_complete_remote_workflow_uses_session_sse_and_concurrency(self):
         with patch.dict("os.environ", {"MCP_DETAIL_CONCURRENCY": "3"}):
@@ -185,6 +194,22 @@ class StreamableHttpClientTests(unittest.TestCase):
             result = client.call_tool("database_metadata", {})
         self.assertEqual(result["database_as_of"], "2026-07-16T00:00:00+00:00")
         self.assertEqual(FakeMcpHandler.transient_failures_remaining, 0)
+
+    def test_complete_zero_result_is_retried_before_accepting_empty_recall(self):
+        FakeMcpHandler.empty_searches_remaining = 1
+        result = run_remote_who_workflow(
+            url=self.url,
+            api_key=FakeMcpHandler.api_key,
+            search_plan={"keyword_groups": []},
+            max_per_query=2,
+            total_limit=3,
+        )
+        self.assertEqual(FakeMcpHandler.search_calls, 2)
+        self.assertEqual(len(result["search"]["results"]), 3)
+        self.assertEqual(
+            result["search"]["retrieval_resilience_audit"]["zero_result_retry_count"],
+            1,
+        )
 
     def test_retryable_status_set_covers_gateway_failures(self):
         client = JsonRpcHttpMcpClient(self.url, FakeMcpHandler.api_key, timeout=1)

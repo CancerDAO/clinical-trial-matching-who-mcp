@@ -47,6 +47,16 @@ The search plan must contain all original dimensions:
 8. patient-country and relevant regional registry terms.
 
 Do not filter the first-pass recall by patient country.
+Keep the patient-facing disease label in its source language. Before WHO MCP
+execution, normalize every query condition and term in the matching project to
+English clinical concepts, including disease, biomarker state, mechanism,
+modality, and known drug names. Exclude `chinese_registry_terms` and any
+`source=chictr` group from WHO MCP and WHO Portal payloads; those source-language
+terms belong only to the regional-registry connector. The MCP transport must
+reject residual CJK rather than silently send or guess it. Rare diseases and
+unmapped drugs may supply audited English aliases through
+`matching_context.search_terms`; neither the platform nor the MCP server should
+infer clinical meaning from locale.
 Every formal query must include a biomarker, mechanism, intervention, drug, or
 modality anchor. Before execution, the transport compiles `condition + term`
 into one conjunctive MCP FTS query. Patient-disease-only queries are rejected
@@ -55,6 +65,9 @@ because they expand cost without demonstrating patient-specific relevance.
 ## MCP retrieval and verification
 
 Use the real stdio MCP tools `database_metadata`, `execute_search_plan`, and `get_trial`. Persist `database_as_of`, MCP protocol/server metadata, query audit, pagination and truncation fields.
+Retry a complete-but-empty MCP search once by default and persist the retry
+count. This protects against transient empty responses without treating a
+repeated zero result as successful clinical recall.
 
 `who_mcp_verifier.py` is the only final deduplication authority. It uses
 canonical registry IDs, WHO universal trial numbers, and normalized CTIS IDs
