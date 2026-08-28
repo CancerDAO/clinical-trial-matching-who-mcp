@@ -113,6 +113,20 @@ _CLINICAL_QUERY_TRANSLATIONS: tuple[tuple[str, str], ...] = (
     ("通路", "pathway"),
 )
 
+_SOURCE_ANNOTATION = (
+    r"(?:仅)?患者(?:自填|自述|口述|提供|报告)"
+    r"(?:的)?(?:单一来源)?(?:[,， ]*(?:待|需)(?:人工)?核实)?"
+    r"|(?:仅)?家属(?:自填|自述|口述|提供|报告)"
+    r"|(?:信息)?来源(?:待核实|未核实|不明)"
+    r"|(?:待|需)(?:人工)?核实"
+)
+_SOURCE_ONLY_RE = re.compile(rf"^(?:{_SOURCE_ANNOTATION})[。.!！]?$", re.IGNORECASE)
+_SOURCE_SUFFIX_RE = re.compile(
+    rf"(?:\s*(?:[-—–]{{2,}}|[|｜;；])\s*|\s*[（(]\s*)"
+    rf"(?P<annotation>{_SOURCE_ANNOTATION})\s*[）)]?[。.!！]?$",
+    re.IGNORECASE,
+)
+
 
 def _clean(value: Any) -> str:
     return re.sub(r"\s+", " ", str(value or "")).strip()
@@ -148,6 +162,25 @@ def contains_cjk(value: Any) -> bool:
     return bool(re.search(r"[\u4e00-\u9fff]", _clean(value)))
 
 
+def strip_clinical_source_annotation(value: Any) -> tuple[str, str | None]:
+    """Separate a controlled provenance note from a clinical query entity.
+
+    The patient record retains provenance separately. This helper only handles
+    explicit source-status phrases and never strips an unknown Chinese clinical
+    concept, which remains subject to the English registry boundary guard.
+    """
+    text = _clean(value)
+    if not text:
+        return "", None
+    if _SOURCE_ONLY_RE.fullmatch(text):
+        return "", text
+    match = _SOURCE_SUFFIX_RE.search(text)
+    if not match:
+        return text, None
+    entity = text[:match.start()].strip(" \t,，;；|｜-—–（(")
+    return _clean(entity), _clean(match.group("annotation"))
+
+
 def normalize_clinical_query_text(value: Any) -> str:
     """Translate deterministic Chinese registry-search concepts into English.
 
@@ -155,7 +188,7 @@ def normalize_clinical_query_text(value: Any) -> str:
     machine translation. Remaining CJK is rejected at the global-registry
     transport boundary so it can never leak into WHO MCP queries.
     """
-    text = _clean(value)
+    text, _ = strip_clinical_source_annotation(value)
     if not text:
         return ""
     disease_replacements: list[tuple[str, str]] = []

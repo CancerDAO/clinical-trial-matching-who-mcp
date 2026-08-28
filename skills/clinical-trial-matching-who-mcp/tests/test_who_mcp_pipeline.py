@@ -146,6 +146,59 @@ class WhoMcpPipelineTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "must be English"):
             compile_search_plan_for_mcp(plan)
 
+    def test_patient_source_annotation_is_separated_from_english_biomarker(self):
+        plan = build_baseline_search_plan({
+            "patient_id": "PT-SYNTHETIC",
+            "cancer_type": "结直肠癌",
+            "mutations": [
+                "KRAS G12C\u2014\u2014\u4ec5\u60a3\u8005\u81ea\u586b",
+                "\u4ec5\u60a3\u8005\u81ea\u586b",
+            ],
+        })
+        compiled = compile_search_plan_for_mcp(plan)
+        terms = [
+            str(query.get("term") or "")
+            for group in compiled["keyword_groups"]
+            for query in group.get("queries") or []
+        ]
+        self.assertTrue(any("KRAS G12C" in term for term in terms))
+        self.assertTrue(all(
+            "\u60a3\u8005" not in term and "\u81ea\u586b" not in term
+            for term in terms
+        ))
+
+    def test_custom_plan_drops_source_only_query_and_audits_cleanup(self):
+        source = {
+            "keyword_groups": [{
+                "dimension": "disease_biomarker",
+                "label": "Disease and biomarker",
+                "queries": [
+                    {
+                        "condition": "colorectal cancer",
+                        "term": "KRAS G12C\u2014\u2014\u4ec5\u60a3\u8005\u81ea\u586b",
+                    },
+                    {
+                        "condition": "colorectal cancer",
+                        "term": "\u4ec5\u60a3\u8005\u81ea\u586b",
+                    },
+                ],
+            }],
+        }
+        normalized = normalize_search_plan_for_patient(source, {
+            "cancer_type": "colorectal cancer",
+        })
+        self.assertEqual(normalized["keyword_groups"][0]["queries"], [{
+            "condition": "colorectal cancer",
+            "term": "KRAS G12C",
+            "original_term_provenance_value": (
+                "KRAS G12C\u2014\u2014\u4ec5\u60a3\u8005\u81ea\u586b"
+            ),
+        }])
+        audit = normalized["generation_audit"]
+        self.assertEqual(audit["source_annotation_removed_query_fields"], 2)
+        self.assertEqual(audit["source_annotation_only_queries_dropped"], 1)
+        compile_search_plan_for_mcp(normalized)
+
     def test_mcp_compiler_excludes_chictr_only_groups(self):
         plan = {
             "keyword_groups": [{
