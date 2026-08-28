@@ -8,6 +8,7 @@ from typing import Any
 
 from disease_concepts import (
     contains_cjk, normalize_clinical_query_text, resolve_disease_terms,
+    strip_clinical_source_annotation,
 )
 
 REQUIRED_DIMENSIONS = (
@@ -166,30 +167,49 @@ def normalize_search_plan_for_patient(
     original = str(disease.get("original") or "").strip()
     replacement = str(disease.get("primary_english") or "solid tumor").strip()
     changed = 0
+    annotations_removed = 0
+    annotation_only_queries_dropped = 0
     for group in normalized.get("keyword_groups") or []:
         if _dimension(group) == "chinese_registry_terms":
             continue
+        cleaned_queries: list[dict[str, Any]] = []
         for query in group.get("queries") or []:
             condition = str(query.get("condition") or "").strip()
             term = str(query.get("term") or "").strip()
-            if condition and condition == original:
+            if condition and condition == original and condition != replacement:
                 query["original_condition_language_value"] = condition
                 query["condition"] = replacement
                 changed += 1
-            if term and original and original in term:
+            if term and original and original != replacement and original in term:
                 query["original_term_language_value"] = term
                 query["term"] = term.replace(original, replacement)
                 changed += 1
             for field in ("condition", "term"):
                 value = str(query.get(field) or "").strip()
+                entity, annotation = strip_clinical_source_annotation(value)
+                if annotation:
+                    query.setdefault(f"original_{field}_provenance_value", value)
+                    query[field] = entity
+                    annotations_removed += 1
+                    value = entity
                 translated = normalize_clinical_query_text(value)
                 if translated != value:
                     query.setdefault(f"original_{field}_language_value", value)
                     query[field] = translated
                     changed += 1
+            if str(query.get("condition") or "").strip() and not str(query.get("term") or "").strip():
+                annotation_only_queries_dropped += 1
+                continue
+            if not str(query.get("condition") or "").strip() and not str(query.get("term") or "").strip():
+                annotation_only_queries_dropped += 1
+                continue
+            cleaned_queries.append(query)
+        group["queries"] = cleaned_queries
     audit = normalized.setdefault("generation_audit", {})
     audit["disease_normalization"] = disease
     audit["language_normalized_query_fields"] = changed
+    audit["source_annotation_removed_query_fields"] = annotations_removed
+    audit["source_annotation_only_queries_dropped"] = annotation_only_queries_dropped
     return normalized
 
 
@@ -219,10 +239,11 @@ def build_baseline_search_plan(patient: dict[str, Any]) -> dict[str, Any]:
     """Build a cancer-agnostic eight-branch baseline when no plan is supplied."""
     cancer = str(patient.get("cancer_type") or "").strip()
     stage = str(patient.get("disease_stage") or patient.get("stage") or "").strip()
-    mutations = [
-        str(value).strip() for value in patient.get("mutations") or []
-        if str(value).strip()
-    ]
+    mutations = []
+    for value in patient.get("mutations") or []:
+        entity, _ = strip_clinical_source_annotation(value)
+        if entity:
+            mutations.append(entity)
     search_terms = patient.get("search_terms") or {}
     disease = resolve_disease_terms(cancer, search_terms)
     primary_disease = disease["primary_english"]
