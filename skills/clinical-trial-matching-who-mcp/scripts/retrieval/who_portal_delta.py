@@ -233,7 +233,11 @@ def build_delta(
         timeout=float(os.environ.get("WHO_PORTAL_TIMEOUT_SECONDS", "60")),
         delay=float(os.environ.get("WHO_PORTAL_REQUEST_DELAY_SECONDS", "0.5")),
     )
-    date_start, date_end = watermark.strftime("%d/%m/%Y"), now.strftime("%d/%m/%Y")
+    overlap_hours = float(os.environ.get("WHO_PORTAL_DELTA_OVERLAP_HOURS", "48"))
+    if overlap_hours < 0 or overlap_hours > 168:
+        raise ValueError("WHO_PORTAL_DELTA_OVERLAP_HOURS must be between 0 and 168")
+    date_start = (watermark - dt.timedelta(hours=overlap_hours)).strftime("%d/%m/%Y")
+    date_end = now.strftime("%d/%m/%Y")
     ids: list[str] = []
     audit: list[dict[str, Any]] = []
     for variant in _query_variants(plan):
@@ -253,6 +257,12 @@ def build_delta(
         })
     unique_ids = list(dict.fromkeys(ids))
     trials = [client.trial(trial_id) for trial_id in unique_ids]
+    complete_queries = sum(1 for item in audit if item.get("complete") is True)
+    zero_result_assessment = (
+        "executed_zero_valid" if not unique_ids and audit and complete_queries == len(audit)
+        else "executed_with_results" if unique_ids
+        else "suspicious_zero"
+    )
     return {
         "schema_version": "who-portal-delta-v1",
         "generator": "who_portal_delta.py",
@@ -265,9 +275,17 @@ def build_delta(
         "source": "WHO ICTRP public advanced search portal",
         "date_start": date_start,
         "date_end": date_end,
-        "boundary_type": "registration_date_proxy",
+        "boundary_type": "registration_date_proxy_with_overlap",
+        "overlap_hours": overlap_hours,
         "query_audit": audit,
-        "control_query": {"query_variants": len(audit), "complete": True},
+        "control_query": {
+            "query_variants": len(audit),
+            "complete_variants": complete_queries,
+            "returned_across_variants": sum(int(item.get("returned") or 0) for item in audit),
+            "complete": bool(audit) and complete_queries == len(audit),
+            "basis": "aggregate of independently executed patient-plan variants",
+        },
+        "zero_result_assessment": zero_result_assessment,
         "trials": trials,
         "limitation": (
             "WHO portal registration-date filtering finds newly registered records but may miss "

@@ -781,6 +781,31 @@ class ModelBatchRecoveryTests(unittest.TestCase):
             BatchContractError("NCT1: risk applies_because is required")
         ))
 
+    def test_permanent_provider_failure_stops_after_current_wave(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            jobs = self._jobs(root, ["NCT1"])
+            payload = json.loads(jobs.read_text(encoding="utf-8"))
+            payload["stage"] = "deep"
+            payload["batches"] = [
+                {
+                    "batch_id": f"deep-{index:04d}", "stage": "deep",
+                    "patient": {"cancer_type": "CRC"},
+                    "trials": [{"id": f"NCT{index}", "gating": self._gating("conditional")}],
+                }
+                for index in range(1, 11)
+            ]
+            jobs.write_text(json.dumps(payload), encoding="utf-8")
+            with patch.dict(os.environ, {"MODEL_DEEP_CONCURRENCY": "3"}), patch(
+                "model_batch_executor._execute_one_batch",
+                side_effect=RuntimeError("Model API HTTP 403: usage limit reached"),
+            ) as execute:
+                with self.assertRaisesRegex(RuntimeError, "permanent model provider failure"):
+                    execute_batches(
+                        jobs, root / "outputs", output_prefix="deep-batch", retries=0
+                    )
+            self.assertLessEqual(execute.call_count, 3)
+
     def test_batch_contract_error_recovers_as_single_trials(self) -> None:
         batch = {
             "batch_id": "clinical-deep-031",

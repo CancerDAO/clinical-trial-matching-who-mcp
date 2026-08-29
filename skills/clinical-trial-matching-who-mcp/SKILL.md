@@ -166,7 +166,7 @@ coverage, and finalize before a validated merged bundle.
 - Do not expose credentials in project files.
 ## Formal readiness semantics
 
-A positive analysis-limit or prefilter-limit is validation-only. Both default to zero. Formal staged runs require every recalled trial to receive either an auditable deterministic hard exclusion or a model gater verdict, and every `match` or `conditional` verdict to receive validated risk, efficacy and development-evidence output.
+A positive analysis-limit or prefilter-limit is validation-only. Both default to zero. Formal staged runs require every recalled trial to receive exactly one auditable disposition: deterministic hard exclusion, primary/secondary model Gater, or low-anchor deferred audit. Deferred audit is not an eligibility exclusion. Every Gater `match` or `conditional` verdict must receive validated risk, efficacy and development-evidence output.
 
 Finalize uses one blocking gate and local warnings. It emits only
 `validation-report.html` when validated analysis integrity is incomplete.

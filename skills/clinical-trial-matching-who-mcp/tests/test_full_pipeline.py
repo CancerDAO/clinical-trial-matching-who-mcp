@@ -65,6 +65,18 @@ def valid_analysis(trial_id: str, cancer: str) -> dict:
 
 
 class GenericPipelineContractTests(unittest.TestCase):
+    def test_coverage_accepts_deferred_audit_as_explicit_disposition(self):
+        prepared = {
+            "all_verified_trials": [{"id": "H"}, {"id": "G"}, {"id": "D"}],
+            "hard_excluded_trials": [{"id": "H"}],
+            "deferred_audit_trials": [{"id": "D"}],
+        }
+        by_id = {"G": valid_analysis("G", "CRC")}
+        audit = pipeline.analysis_coverage_audit(prepared, by_id)
+        self.assertTrue(audit["disposition_equation_valid"])
+        self.assertEqual(audit["deferred_audit_count"], 1)
+        self.assertEqual(audit["omitted_count"], 0)
+
     def test_prepare_reads_mcp_configuration_from_environment(self):
         fake_result = {
             "transport": "stdio_mcp_jsonrpc",

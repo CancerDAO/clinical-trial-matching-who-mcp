@@ -360,6 +360,7 @@ def prepare_formal(args: argparse.Namespace) -> dict[str, Any]:
         "final_dir": str((run_dir / "final").resolve()),
         "recall_count": len(result["all_verified_trials"]),
         "hard_excluded_count": len(result.get("hard_excluded_trials") or []),
+        "deferred_audit_count": len(result.get("deferred_audit_trials") or []),
         "gater_expected_count": len(result["analysis_candidate_ids"]),
         "retrieval_audit": {
             "complete": retrieval_complete,

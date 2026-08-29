@@ -37,6 +37,7 @@ from analysis_contract import (
 from io_utils import write_json_atomic
 from patient_input import load_patient_input
 from generic_hard_rules import apply_generic_hard_rules
+from recall_triage import stratify_recall_candidates
 from feasibility import WEIGHTS, compute_feasibility
 from html_renderer import render_html, render_validation_html
 from report_translation import concise_patient_text, maybe_translate_report
@@ -301,9 +302,14 @@ def analysis_coverage_audit(
     """Prove complete disposition and deep-analysis coverage with explicit ID sets."""
     recall_ids = _trial_ids(prepared.get("all_verified_trials") or [])
     hard_excluded_ids = _trial_ids(prepared.get("hard_excluded_trials") or [])
+    deferred_ids = _trial_ids(prepared.get("deferred_audit_trials") or [])
     gater_ids = set(by_id)
-    dispositions_disjoint = not (hard_excluded_ids & gater_ids)
-    disposition_ids = hard_excluded_ids | gater_ids
+    dispositions_disjoint = not (
+        (hard_excluded_ids & gater_ids)
+        or (hard_excluded_ids & deferred_ids)
+        or (gater_ids & deferred_ids)
+    )
+    disposition_ids = hard_excluded_ids | gater_ids | deferred_ids
 
     non_excluded_ids = {
         trial_id for trial_id, item in by_id.items()
@@ -331,6 +337,7 @@ def analysis_coverage_audit(
     return {
         "recall_count": len(recall_ids),
         "hard_excluded_count": len(hard_excluded_ids),
+        "deferred_audit_count": len(deferred_ids),
         "gater_completed_count": len(gater_ids),
         "non_excluded_count": len(non_excluded_ids),
         "risk_completed_count": len(risk_ids),
@@ -338,7 +345,11 @@ def analysis_coverage_audit(
         "evidence_completed_count": len(evidence_ids),
         "omitted_count": len(recall_ids - disposition_ids),
         "unexpected_disposition_count": len(disposition_ids - recall_ids),
-        "disposition_overlap_count": len(hard_excluded_ids & gater_ids),
+        "disposition_overlap_count": (
+            len(hard_excluded_ids & gater_ids)
+            + len(hard_excluded_ids & deferred_ids)
+            + len(gater_ids & deferred_ids)
+        ),
         "missing_disposition_ids": sorted(recall_ids - disposition_ids),
         "unexpected_disposition_ids": sorted(disposition_ids - recall_ids),
         "missing_risk_ids": sorted(non_excluded_ids - risk_ids),
@@ -607,7 +618,18 @@ def prepare(
         else:
             gater_pool.append(trial)
     hard_excluded = generic_hard_excluded + registry_inactive
-    prefiltered, prefilter_audit = deterministic_prefilter(gater_pool, prefilter_limit)
+    recall_triage = stratify_recall_candidates(patient, gater_pool)
+    gater_primary = sorted(recall_triage["gater_primary"], key=_candidate_rank)
+    gater_secondary = sorted(recall_triage["gater_secondary"], key=_candidate_rank)
+    deferred_audit = sorted(recall_triage["deferred_audit"], key=_candidate_rank)
+    model_workload = gater_primary + gater_secondary
+    prefiltered, prefilter_audit = deterministic_prefilter(model_workload, prefilter_limit)
+    prefilter_audit.update({
+        "version": "deterministic-recall-triage-v2",
+        "deferred_audit_count": len(deferred_audit),
+        "budget_omitted_count": 0,
+        "recall_triage": recall_triage["audit"],
+    })
     candidates = select_analysis_candidates(prefiltered, analysis_limit)
     query_audit = search.get("query_audit") or []
     retrieval_complete = bool(query_audit) and not stats.get("global_truncated") and not (
@@ -620,7 +642,10 @@ def prepare(
             if isinstance(item, dict)
         )
     )
-    no_budget_omissions = len(candidates) == len(gater_pool)
+    no_budget_omissions = (
+        len(candidates) == len(model_workload)
+        and len(model_workload) + len(deferred_audit) == len(gater_pool)
+    )
     analysis_scope = "staged_complete" if no_budget_omissions else "validation_subset"
     jobs = build_analysis_jobs(patient, candidates, SKILLS_ROOT, batch_size=batch_size)
     payload = {
@@ -655,6 +680,8 @@ def prepare(
             "audit": triage["audit"],
         },
         "hard_excluded_trials": hard_excluded,
+        "deferred_audit_trials": deferred_audit,
+        "recall_triage": recall_triage["audit"],
         "prefiltered_trials": prefiltered,
         "preanalysis_filter": prefilter_audit,
         "analysis_candidates": candidates,
@@ -676,6 +703,19 @@ def prepare(
     payload["normalized_search_plan_path"] = str(normalized_plan_path.resolve())
     write_json_atomic(out_dir / "prepared.json", payload)
     write_json_atomic(out_dir / "analysis_jobs.json", jobs)
+    write_json_atomic(out_dir / "recall_funnel_audit.json", {
+        "schema_version": "recall-funnel-audit-v1",
+        "created_at": payload["created_at"],
+        "recall_count": len(verified),
+        "hard_excluded_ids": sorted(_trial_ids(hard_excluded)),
+        "gater_primary_ids": sorted(_trial_ids(gater_primary)),
+        "gater_secondary_ids": sorted(_trial_ids(gater_secondary)),
+        "deferred_audit_ids": sorted(_trial_ids(deferred_audit)),
+        "triage": recall_triage["audit"],
+        "portal_delta_zero_result_assessment": portal_audit.get(
+            "zero_result_assessment"
+        ),
+    })
     return payload
 
 
@@ -766,6 +806,7 @@ def finalize(*, prepared_path: Path, analysis_path: Path, out_dir: Path) -> dict
         "counts": {
             "recall": coverage_audit["recall_count"],
             "hard_excluded": coverage_audit["hard_excluded_count"],
+            "deferred_audit": coverage_audit["deferred_audit_count"],
             "gater_completed": coverage_audit["gater_completed_count"],
             "deep_completed": coverage_audit["non_excluded_count"],
             "risk_completed": coverage_audit["risk_completed_count"],
@@ -816,6 +857,8 @@ def finalize(*, prepared_path: Path, analysis_path: Path, out_dir: Path) -> dict
         "gater_analyzed_count": len(candidates),
         "deep_analyzed_count": sum(1 for trial in trials if trial["gating"]["verdict"] in {"match", "conditional"}),
         "hard_excluded_count": len(prepared.get("hard_excluded_trials") or []),
+        "deferred_audit_count": len(prepared.get("deferred_audit_trials") or []),
+        "deferred_audit_trials": prepared.get("deferred_audit_trials") or [],
         "counts": counts,
         "geography_audit": geography,
         "feasibility_weights": WEIGHTS,

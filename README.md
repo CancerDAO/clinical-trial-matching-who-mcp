@@ -141,8 +141,13 @@ export EXTERNAL_REGISTRY_ACCESS_AUTHORIZED=1
 --portal-delta-mode file --portal-delta /path/to/portal_delta.json
 ```
 
-`--portal-delta-mode off` 不访问 WHO 门户。Portal Delta 只补充数据库水位线之后的
-新登记，不能代替旧试验的实时招募状态核验。
+`--portal-delta-mode off` 不访问 WHO 门户。Portal Delta 使用数据库水位线前默认
+48 小时重叠窗口补充新登记记录，并明确区分“完整执行但零新增”和可疑零结果。它仍
+不能把登记日期等同于最后更新时间，因此原始注册库实时核验继续承担状态更新检查。
+
+正式 Prepare 在召回与 Gater 之间执行确定性锚点分层：疾病/分子直接匹配进入主
+Gater，篮子试验等部分匹配进入次级 Gater，状态未知且缺少患者特异锚点的记录进入
+审计延后集合。延后不等于不符合，所有召回 ID 仍出现在运行清单中。
 
 ### 2. Execute
 
