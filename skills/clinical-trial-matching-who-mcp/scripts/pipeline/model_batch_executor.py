@@ -561,6 +561,16 @@ def _retry_runner_failure(error: Exception) -> bool:
     return not any(marker in text for marker in (*already_retried, *permanent))
 
 
+def _is_permanent_provider_failure(error: Exception) -> bool:
+    """Identify failures that no batch retry, split, or later wave can repair."""
+    text = str(error).casefold()
+    return any(marker in text for marker in (
+        "model api http 400", "model api http 401", "model api http 403",
+        "model api http 404", "access_terminated", "usage limit", "quota",
+        "invalid api key", "authentication", "model_name is required",
+    ))
+
+
 def _safe_trial_name(trial_id: str) -> str:
     readable = "".join(character for character in trial_id if character.isalnum() or character in "-_")
     digest = hashlib.sha256(trial_id.encode("utf-8")).hexdigest()[:10]
@@ -729,6 +739,7 @@ def execute_batches(
         raise ValueError("MODEL_CIRCUIT_BREAKER_FAILURES must be at least 1")
     consecutive_failures = 0
     breaker_open = False
+    permanent_failure = ""
     with ThreadPoolExecutor(max_workers=concurrency) as pool:
         for start in range(0, len(batches), concurrency):
             wave = batches[start:start + concurrency]
@@ -746,9 +757,17 @@ def execute_batches(
                     outcome = future.result()
                 except Exception as exc:
                     failures.append(f"{batch_id}: {exc}")
+                    if _is_permanent_provider_failure(exc):
+                        permanent_failure = f"{batch_id}: {exc}"
+                        for pending in futures:
+                            if pending is not future:
+                                pending.cancel()
                 else:
                     counts[outcome] += 1
                     wave_successes += 1
+            if permanent_failure:
+                breaker_open = True
+                break
             consecutive_failures = (
                 0 if wave_successes else consecutive_failures + len(wave)
             )
@@ -756,6 +775,11 @@ def execute_batches(
                 breaker_open = True
                 break
     if failures:
+        if permanent_failure:
+            raise RuntimeError(
+                "permanent model provider failure; no additional batches were submitted: "
+                + permanent_failure
+            )
         breaker = (
             f"; circuit breaker opened after {consecutive_failures} consecutive "
             "batch failures; remaining batches were not submitted"

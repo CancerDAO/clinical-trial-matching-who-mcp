@@ -44,6 +44,26 @@ class FreshnessPipelineTests(unittest.TestCase):
         self.assertEqual([trial["id"] for trial in payload["trials"]], ["NCT00000001"])
         self.assertEqual(len(payload["query_audit"]), 3)
         self.assertTrue(all(item["complete"] for item in payload["query_audit"]))
+        self.assertEqual(payload["boundary_type"], "registration_date_proxy_with_overlap")
+        self.assertEqual(payload["overlap_hours"], 48)
+        self.assertEqual(payload["zero_result_assessment"], "executed_with_results")
+        self.assertTrue(payload["control_query"]["complete"])
+
+    def test_complete_zero_delta_is_explicitly_audited(self):
+        class EmptyPortal(_Portal):
+            def search(self, **kwargs):
+                self.searches.append(kwargs)
+                return [], 0
+
+        payload = build_delta(
+            database_as_of="2026-07-23T00:00:00+00:00",
+            plan={"keyword_groups": [{"label": "target", "queries": [
+                {"condition": "colorectal cancer", "term": "KRAS G12C"}
+            ]}]},
+            client=EmptyPortal(),
+        )
+        self.assertEqual(payload["trials"], [])
+        self.assertEqual(payload["zero_result_assessment"], "executed_zero_valid")
 
     def test_portal_application_error_page_is_not_a_successful_zero_result(self):
         client = WhoPortalClient(delay=0)
