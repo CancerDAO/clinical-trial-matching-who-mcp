@@ -6,7 +6,7 @@ from collections.abc import Iterable, Mapping
 from copy import deepcopy
 from typing import Any
 
-RULESET_VERSION = "generic-hard-rules-v1"
+RULESET_VERSION = "generic-hard-rules-v2"
 _SEX = {"female": "female", "f": "female", "woman": "female", "women": "female",
         "male": "male", "m": "male", "man": "male", "men": "male"}
 _ALL_SEXES = {"all", "both", "any"}
@@ -80,6 +80,14 @@ def evaluate_generic_hard_rules(patient: Mapping[str, Any], trial: Mapping[str, 
         raise TypeError("patient and trial must be mappings")
     eligibility = _section(trial)
     triggered: list[dict[str, Any]] = []
+
+    study_type = str(trial.get("study_type_normalized") or "").strip().casefold()
+    if study_type in {"observational", "observational study", "patient registry"}:
+        triggered.append(_trigger(
+            "GHR-NONINTERVENTIONAL-STUDY", "matching_goal", "therapeutic trial",
+            trial.get("study_type_normalized"),
+            "The registry structurally classifies this record as non-interventional.",
+        ))
 
     patient_age, patient_age_key = _first(patient, "age_years", "age")
     age_months = _age_months(patient_age)

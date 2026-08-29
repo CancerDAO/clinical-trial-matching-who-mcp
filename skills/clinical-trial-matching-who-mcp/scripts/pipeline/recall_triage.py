@@ -8,7 +8,7 @@ from typing import Any
 from disease_concepts import resolve_disease_terms, strip_clinical_source_annotation
 
 
-TRIAGE_VERSION = "recall-anchor-triage-v1"
+TRIAGE_VERSION = "recall-anchor-triage-v2"
 _GENERIC_DISEASE_TERMS = {
     "cancer", "malignancy", "malignant tumor", "neoplasm", "solid tumor",
     "advanced solid tumor", "metastatic solid tumor",
@@ -46,15 +46,48 @@ def _patient_molecular_anchors(patient: dict[str, Any]) -> list[str]:
     return list(dict.fromkeys(anchors))
 
 
-def _trial_search_text(trial: dict[str, Any]) -> str:
+_NEGATIVE_CONTEXT = re.compile(
+    r"\b(?:exclude|excludes|excluded|excluding|ineligible|not eligible|"
+    r"must not have|without|except)\b"
+)
+
+
+def _registry_search_text(trial: dict[str, Any]) -> str:
+    """Return registry evidence only; retrieval queries are provenance, not evidence."""
     values = [
         trial.get("title"), trial.get("scientific_title"), trial.get("brief_summary"),
         trial.get("disease_text"), trial.get("intervention_summary"),
         trial.get("interventions"), trial.get("eligibility_full"),
         trial.get("eligibility_excerpt"), trial.get("parsed_criteria"),
-        trial.get("matched_queries"),
     ]
     return _canonical(values)
+
+
+def _polarity_matches(haystack: str, terms: list[str]) -> tuple[list[str], list[str]]:
+    positive: list[str] = []
+    negative: list[str] = []
+    for term in terms:
+        phrase = _canonical(term)
+        if not phrase:
+            continue
+        pattern = re.compile(rf"(?:^| )({re.escape(phrase)})(?: |$)")
+        term_positive = False
+        term_negative = False
+        for match in pattern.finditer(haystack):
+            before = haystack[max(0, match.start() - 100):match.start()]
+            after = haystack[match.end():min(len(haystack), match.end() + 50)]
+            if _NEGATIVE_CONTEXT.search(before) or re.match(
+                r"\s*(?:is|are|was|were)?\s*(?:excluded|ineligible|not eligible)\b",
+                after,
+            ):
+                term_negative = True
+            else:
+                term_positive = True
+        if term_positive:
+            positive.append(term)
+        if term_negative:
+            negative.append(term)
+    return positive, negative
 
 
 def _live_status(trial: dict[str, Any]) -> str:
@@ -71,9 +104,13 @@ def score_recall_anchor(patient: dict[str, Any], trial: dict[str, Any]) -> dict[
         if _canonical(term) not in _GENERIC_DISEASE_TERMS
     ]
     molecular_terms = _patient_molecular_anchors(patient)
-    text = _trial_search_text(trial)
-    disease_matches = [term for term in disease_terms if _contains_phrase(text, term)]
-    molecular_matches = [term for term in molecular_terms if _contains_phrase(text, term)]
+    registry_text = _registry_search_text(trial)
+    disease_matches, negative_disease_matches = _polarity_matches(
+        registry_text, disease_terms
+    )
+    molecular_matches, negative_molecular_matches = _polarity_matches(
+        registry_text, molecular_terms
+    )
     matched_by = [str(value) for value in trial.get("matched_by") or [] if str(value).strip()]
     matched_queries = _canonical(trial.get("matched_queries") or [])
     query_has_disease = any(_contains_phrase(matched_queries, term) for term in disease_terms)
@@ -99,16 +136,16 @@ def score_recall_anchor(patient: dict[str, Any], trial: dict[str, Any]) -> dict[
     if len(matched_by) >= 2:
         score += 1
         reasons.append("multiple_retrieval_branches")
+    if negative_disease_matches:
+        reasons.append("negative_disease_context")
+    if negative_molecular_matches:
+        reasons.append("negative_molecular_context")
 
     live_status = _live_status(trial)
-    weak_anchor = not disease_matches and not molecular_matches and not (
-        query_has_disease or query_has_molecular
-    )
+    weak_anchor = not disease_matches and not molecular_matches
     if disease_matches and (molecular_matches or not molecular_terms):
         tier = "gater_primary"
-    elif score >= 6:
-        tier = "gater_primary"
-    elif disease_matches or molecular_matches or score >= 3:
+    elif disease_matches or molecular_matches:
         tier = "gater_secondary"
     else:
         tier = "deferred_audit"
@@ -125,6 +162,8 @@ def score_recall_anchor(patient: dict[str, Any], trial: dict[str, Any]) -> dict[
         "reasons": reasons,
         "disease_matches": disease_matches,
         "molecular_matches": molecular_matches,
+        "negative_disease_matches": negative_disease_matches,
+        "negative_molecular_matches": negative_molecular_matches,
         "matched_branch_count": len(matched_by),
         "live_registry_status": live_status,
         "policy": (

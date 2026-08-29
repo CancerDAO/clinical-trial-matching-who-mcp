@@ -81,6 +81,17 @@ def _portal_clock_skew_minutes() -> float:
     return value
 
 
+def _secondary_gater_limit() -> int:
+    raw = os.environ.get("RECALL_SECONDARY_GATER_LIMIT", "50")
+    try:
+        value = int(raw)
+    except ValueError as exc:
+        raise ValueError("RECALL_SECONDARY_GATER_LIMIT must be an integer") from exc
+    if value < 0:
+        raise ValueError("RECALL_SECONDARY_GATER_LIMIT must be zero or greater")
+    return value
+
+
 def _load_portal_delta(
     path: Path | None, database_as_of: str, expected_plan_sha256: str = ""
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
@@ -621,14 +632,36 @@ def prepare(
     recall_triage = stratify_recall_candidates(patient, gater_pool)
     gater_primary = sorted(recall_triage["gater_primary"], key=_candidate_rank)
     gater_secondary = sorted(recall_triage["gater_secondary"], key=_candidate_rank)
-    deferred_audit = sorted(recall_triage["deferred_audit"], key=_candidate_rank)
-    model_workload = gater_primary + gater_secondary
+    secondary_limit = _secondary_gater_limit()
+    selected_secondary = gater_secondary[:secondary_limit]
+    deferred_secondary = gater_secondary[secondary_limit:]
+    for trial in deferred_secondary:
+        trial["recall_triage"]["execution_disposition"] = "deferred_secondary_limit"
+    deferred_audit = sorted(
+        recall_triage["deferred_audit"] + deferred_secondary,
+        key=_candidate_rank,
+    )
+    model_workload = gater_primary + selected_secondary
     prefiltered, prefilter_audit = deterministic_prefilter(model_workload, prefilter_limit)
     prefilter_audit.update({
         "version": "deterministic-recall-triage-v2",
         "deferred_audit_count": len(deferred_audit),
+        "secondary_gater_limit": secondary_limit,
+        "secondary_gater_selected_count": len(selected_secondary),
+        "secondary_gater_deferred_count": len(deferred_secondary),
         "budget_omitted_count": 0,
         "recall_triage": recall_triage["audit"],
+        "secondary_gater_policy": {
+            "limit": secondary_limit,
+            "available_count": len(gater_secondary),
+            "selected_count": len(selected_secondary),
+            "deferred_count": len(deferred_secondary),
+            "policy": (
+                "Primary candidates and at most the configured number of ranked "
+                "secondary candidates receive immediate model Gater analysis. "
+                "Remaining secondary candidates retain an auditable deferred disposition."
+            ),
+        },
     })
     candidates = select_analysis_candidates(prefiltered, analysis_limit)
     query_audit = search.get("query_audit") or []
@@ -710,6 +743,8 @@ def prepare(
         "hard_excluded_ids": sorted(_trial_ids(hard_excluded)),
         "gater_primary_ids": sorted(_trial_ids(gater_primary)),
         "gater_secondary_ids": sorted(_trial_ids(gater_secondary)),
+        "gater_secondary_selected_ids": sorted(_trial_ids(selected_secondary)),
+        "gater_secondary_deferred_ids": sorted(_trial_ids(deferred_secondary)),
         "deferred_audit_ids": sorted(_trial_ids(deferred_audit)),
         "triage": recall_triage["audit"],
         "portal_delta_zero_result_assessment": portal_audit.get(

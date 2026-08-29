@@ -55,6 +55,23 @@ class GenericHardRuleTests(unittest.TestCase):
         self.assertTrue(evaluate_generic_hard_rules(
             patient, {"eligibility": {"allows_pregnancy": "unknown"}})["pass_to_gater"])
 
+    def test_structured_observational_record_is_excluded_from_treatment_matching(self):
+        result = evaluate_generic_hard_rules(
+            {"cancer_type": "colorectal cancer"},
+            {"id": "OBS1", "study_type_normalized": "Observational"},
+        )
+        self.assertEqual(result["disposition"], "hard_exclude")
+        self.assertEqual(
+            [item["rule_id"] for item in result["triggered_rules"]],
+            ["GHR-NONINTERVENTIONAL-STUDY"],
+        )
+
+    def test_free_text_observational_word_is_not_a_hard_exclusion(self):
+        result = evaluate_generic_hard_rules(
+            {}, {"title": "Observational signals in an interventional study"}
+        )
+        self.assertTrue(result["pass_to_gater"])
+
     def test_batch_partitions_trials_preserves_inputs_and_exposes_audit(self):
         trials = [{"id": "too-young", "minimum_age": "18 Years"},
                   {"id": "review", "parsed_criteria": {"inclusion": ["specialist review required"]}}]

@@ -9,7 +9,7 @@ This skill changes the retrieval and registry-verification boundary. It does not
 
 ## Non-negotiable architecture
 
-`patient structure + original eight-dimensional plan` -> `real WHO MCP + optional authorized WHO registration-date delta` -> `one verifier/deduplicator` -> `direct-registry live status verification` -> `registry-status exclusion + generic structured hard-rule triage` -> `deterministic all-batch model executor` -> `trial-gater for every remaining trial` -> `risk/efficacy/evidence only for match or conditional` -> `decision-synthesizer` -> `mechanism classifier` -> `one patient-report renderer`.
+`patient structure + original eight-dimensional plan` -> `real WHO MCP + optional authorized WHO registration-date delta` -> `one verifier/deduplicator` -> `direct-registry live status verification` -> `registry-status exclusion + generic structured hard-rule triage` -> `registry-evidence relevance tiers` -> `deterministic all-batch model executor for primary plus a bounded ranked secondary set` -> `risk/efficacy/evidence only for match or conditional` -> `decision-synthesizer` -> `mechanism classifier` -> `one patient-report renderer`.
 
 A formal report has two executable stages separated by model work:
 
@@ -166,7 +166,7 @@ coverage, and finalize before a validated merged bundle.
 - Do not expose credentials in project files.
 ## Formal readiness semantics
 
-A positive analysis-limit or prefilter-limit is validation-only. Both default to zero. Formal staged runs require every recalled trial to receive exactly one auditable disposition: deterministic hard exclusion, primary/secondary model Gater, or low-anchor deferred audit. Deferred audit is not an eligibility exclusion. Every Gater `match` or `conditional` verdict must receive validated risk, efficacy and development-evidence output.
+A positive analysis-limit or prefilter-limit is validation-only. Both default to zero. Formal staged runs require every recalled trial to receive exactly one auditable disposition: deterministic hard exclusion, immediate model Gater, or deferred audit. Registry text, not retrieval-query provenance, determines relevance tiers. By default all primary candidates and at most `RECALL_SECONDARY_GATER_LIMIT=50` ranked secondary candidates receive immediate Gater analysis; remaining secondary candidates are deferred, not declared ineligible. Every Gater `match` or `conditional` verdict must receive validated risk, efficacy and development-evidence output.
 
 Finalize uses one blocking gate and local warnings. It emits only
 `validation-report.html` when validated analysis integrity is incomplete.

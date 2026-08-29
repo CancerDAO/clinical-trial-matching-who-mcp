@@ -56,6 +56,38 @@ class RecallTriageTests(unittest.TestCase):
         })
         self.assertEqual(audit["tier"], "gater_primary")
 
+    def test_retrieval_query_is_not_clinical_evidence(self) -> None:
+        audit = score_recall_anchor(self.patient, {
+            "id": "NCT-query-only",
+            "title": "A general oncology platform study",
+            "matched_queries": ["colorectal cancer KRAS G12C"],
+            "matched_by": ["disease_biomarker", "pathway_resistance"],
+            "patient_country_site_count": 5,
+            "live_registry_verification": {"status": "active"},
+        })
+        self.assertEqual(audit["tier"], "deferred_audit")
+        self.assertNotIn("direct_disease_anchor", audit["reasons"])
+
+    def test_negative_disease_context_does_not_promote_trial(self) -> None:
+        audit = score_recall_anchor(self.patient, {
+            "id": "NCT-negative",
+            "eligibility_full": "Patients with colorectal cancer are excluded.",
+            "matched_queries": ["colorectal cancer precision oncology"],
+            "live_registry_verification": {"status": "active"},
+        })
+        self.assertEqual(audit["tier"], "deferred_audit")
+        self.assertIn("negative_disease_context", audit["reasons"])
+
+    def test_country_and_multiple_queries_do_not_create_primary_evidence(self) -> None:
+        audit = score_recall_anchor(self.patient, {
+            "id": "NCT-disease-only",
+            "disease_text": "Metastatic colorectal cancer",
+            "matched_by": ["disease", "immune"],
+            "patient_country_site_count": 8,
+            "live_registry_verification": {"status": "active"},
+        })
+        self.assertEqual(audit["tier"], "gater_secondary")
+
     def test_stratification_disposes_every_id_once(self) -> None:
         result = stratify_recall_candidates(self.patient, [
             {"id": "A", "title": "KRAS G12C colorectal cancer"},
