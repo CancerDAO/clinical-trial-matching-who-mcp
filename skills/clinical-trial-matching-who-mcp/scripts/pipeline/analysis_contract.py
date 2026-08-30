@@ -88,6 +88,19 @@ ANALYSIS_TRIAL_FIELDS = (
     "hard_excluded", "hard_exclusion",
 )
 
+GATER_TRIAL_FIELDS = tuple(
+    key for key in ANALYSIS_TRIAL_FIELDS
+    if key not in {"eligibility_full", "eligibility_excerpt", "matched_queries"}
+)
+COMPACT_GATER_TRIAL_FIELDS = (
+    "id", "trial_uid", "primary_registry_id", "registry_ids", "title",
+    "scientific_title", "brief_summary", "disease_text", "interventions",
+    "intervention_summary", "phases", "overall_status", "sponsor",
+    "mechanism_category", "feasibility", "country_assessment", "patient_country",
+    "patient_country_site_count", "patient_country_sites",
+    "live_registry_verification", "matched_by", "matched_dimensions",
+)
+
 DEEP_ANALYSIS_TRIAL_FIELDS = (
     "id", "trial_uid", "primary_registry_id", "registry_ids", "title",
     "scientific_title", "brief_summary", "disease_text", "interventions",
@@ -101,11 +114,12 @@ def compact_trial_for_analysis(
     trial: dict[str, Any], stage: str = "gater",
 ) -> dict[str, Any]:
     """Drop bulky registry payloads that do not inform the four model subskills."""
-    fields = (
-        DEEP_ANALYSIS_TRIAL_FIELDS
-        if stage == "deep"
-        else ANALYSIS_TRIAL_FIELDS
-    )
+    if stage == "deep":
+        fields = DEEP_ANALYSIS_TRIAL_FIELDS
+    elif stage == "gater-compact":
+        fields = COMPACT_GATER_TRIAL_FIELDS
+    else:
+        fields = GATER_TRIAL_FIELDS
     compact = {key: trial[key] for key in fields if key in trial}
     sites = list(compact.get("patient_country_sites") or [])
     if len(sites) > 10:
@@ -163,9 +177,11 @@ def repair_mojibake(value: Any) -> Any:
 
 
 def build_analysis_jobs(
-    patient: dict[str, Any], trials: list[dict[str, Any]], skills_root: Path, *, batch_size: int = 5
+    patient: dict[str, Any], trials: list[dict[str, Any]], skills_root: Path, *, batch_size: int = 8
 ) -> dict[str, Any]:
     """Build first-stage gater packets for every non-hard-excluded candidate."""
+    from analysis_priority import deep_required as trial_deep_required
+
     skill_paths = {name: str((skills_root / name / "SKILL.md").resolve()) for name in SUBSKILLS}
     target_language = report_language(patient)
     stage_patient = compact_patient_for_stage(patient, "gater")
@@ -174,11 +190,25 @@ def build_analysis_jobs(
         raise AnalysisContractError(f"Missing canonical subskills: {', '.join(missing)}")
     hard_excluded = [trial for trial in trials if _is_hard_excluded(trial)]
     gating_trials = [trial for trial in trials if not _is_hard_excluded(trial)]
+    gating_trials = sorted(
+        gating_trials,
+        key=lambda trial: 0 if (trial.get("analysis_priority") or {}).get("band") == "A" else 1,
+    )
+    size = max(1, batch_size)
     batches = []
-    for start in range(0, len(gating_trials), max(1, batch_size)):
-        batch = [compact_trial_for_analysis(trial) for trial in gating_trials[start:start + max(1, batch_size)]]
+    for start in range(0, len(gating_trials), size):
+        chunk = gating_trials[start:start + size]
+        batch = [
+            compact_trial_for_analysis(
+                trial,
+                "gater-compact"
+                if (trial.get("analysis_priority") or {}).get("gater_mode") == "compact"
+                else "gater",
+            )
+            for trial in chunk
+        ]
         batches.append({
-            "batch_id": f"clinical-gater-{start // max(1, batch_size) + 1:03d}",
+            "batch_id": f"clinical-gater-{start // size + 1:03d}",
             "stage": "gater",
             "patient": stage_patient,
             "trials": batch,
@@ -191,6 +221,9 @@ def build_analysis_jobs(
                 "criterion facts, blockers, and a minimal factual rationale; do not write report prose."
             ),
         })
+    deep_required_trial_ids = [
+        _trial_id(trial) for trial in gating_trials if trial_deep_required(trial)
+    ]
     return {
         "schema_version": JOBS_SCHEMA_VERSION,
         "workflow": "gater_then_deep_analysis",
@@ -201,11 +234,26 @@ def build_analysis_jobs(
         "trial_count": len(gating_trials),
         "input_trial_count": len(trials),
         "hard_excluded_trial_ids": [_trial_id(trial) for trial in hard_excluded],
+        "deep_required_trial_ids": deep_required_trial_ids,
+        "priority_audit": {
+            "band_a": [
+                _trial_id(trial) for trial in gating_trials
+                if (trial.get("analysis_priority") or {}).get("band") == "A"
+            ],
+            "band_b": [
+                _trial_id(trial) for trial in gating_trials
+                if (trial.get("analysis_priority") or {}).get("band") == "B"
+            ],
+        },
         "batches": batches,
         "deep_stage": {
             "created_from_verdicts": ["match", "conditional"],
             "required_execution_order": ["trial-risk-annotator", "trial-efficacy-contextualizer"],
             "output_schema": SCHEMA_VERSION,
+            "policy": (
+                "Deep analysis runs only for Band A match/conditional trials. "
+                "Untagged jobs keep the historical all-match/conditional contract."
+            ),
         },
         "decision_job": {
             "skill": "decision-synthesizer",
@@ -231,6 +279,7 @@ def _is_hard_excluded(trial: dict[str, Any]) -> bool:
 def build_deep_analysis_jobs(
     patient: dict[str, Any], trials: list[dict[str, Any]], gating_results: list[dict[str, Any]],
     skills_root: Path, *, batch_size: int = 5,
+    deep_required_ids: list[str] | None = None,
 ) -> dict[str, Any]:
     """Build second-stage packets only for model-gated match/conditional trials."""
     skill_paths = {name: str((skills_root / name / "SKILL.md").resolve()) for name in SUBSKILLS}
@@ -253,10 +302,12 @@ def build_deep_analysis_jobs(
         missing_ids = sorted(expected - set(gating_by_id))
         raise AnalysisContractError(f"Gater coverage mismatch; missing={missing_ids[:10]}")
 
+    required_deep = None if deep_required_ids is None else set(deep_required_ids)
     selected = [
         (trial_id, trial_by_id[trial_id], item["gating"])
         for trial_id, item in gating_by_id.items()
         if item["gating"]["verdict"] in {"match", "conditional"}
+        and (required_deep is None or trial_id in required_deep)
     ]
     size = max(1, batch_size)
     target_language = report_language(patient)
@@ -283,6 +334,11 @@ def build_deep_analysis_jobs(
             ),
         })
     selected_ids = {trial_id for trial_id, _, _ in selected}
+    compact_skipped_ids = sorted(
+        trial_id for trial_id, item in gating_by_id.items()
+        if item["gating"]["verdict"] in {"match", "conditional"}
+        and trial_id not in selected_ids
+    )
     return {
         "schema_version": JOBS_SCHEMA_VERSION,
         "workflow": "gater_then_deep_analysis",
@@ -293,6 +349,8 @@ def build_deep_analysis_jobs(
         "trial_count": len(selected),
         "source_gater_trial_count": len(gating_results),
         "excluded_trial_ids": sorted(set(gating_by_id) - selected_ids),
+        "compact_gater_skipped_deep_ids": compact_skipped_ids,
+        "deep_required_trial_ids": sorted(selected_ids),
         "batches": batches,
     }
 
@@ -417,8 +475,28 @@ def validate_stage_item(
     raise AnalysisContractError(f"Unsupported model batch stage: {stage}")
 
 
+def _needs_deep_fields(
+    item: dict[str, Any], deep_required_ids: list[str] | set[str] | None = None
+) -> bool:
+    """Untagged match/conditional rows keep the historical deep contract."""
+    verdict = str((item.get("gating") or {}).get("verdict") or "")
+    if verdict not in {"match", "conditional"}:
+        return False
+    trial_id = str(item.get("trial_id") or item.get("id") or "").strip()
+    priority = item.get("analysis_priority")
+    if isinstance(priority, dict):
+        return bool(priority.get("deep_required"))
+    if deep_required_ids is None:
+        return True
+    return trial_id in set(deep_required_ids)
+
+
 def validate_analysis_bundle(
-    bundle: dict[str, Any], patient: dict[str, Any], expected_trial_ids: list[str]
+    bundle: dict[str, Any],
+    patient: dict[str, Any],
+    expected_trial_ids: list[str],
+    *,
+    deep_required_ids: list[str] | None = None,
 ) -> dict[str, dict[str, Any]]:
     """Reject heuristic/example outputs and validate all original subskill contracts."""
     if bundle.get("schema_version") != SCHEMA_VERSION:
@@ -444,7 +522,7 @@ def validate_analysis_bundle(
         if trial_id in by_id:
             raise AnalysisContractError(f"Duplicate analysis for {trial_id}")
         _validate_gating(item)
-        if item["gating"]["verdict"] in {"match", "conditional"}:
+        if _needs_deep_fields(item, deep_required_ids):
             _validate_risk(item, patient)
             _validate_efficacy(item)
         by_id[trial_id] = item
@@ -471,12 +549,13 @@ def normalized_report_analysis(item: dict[str, Any]) -> dict[str, Any]:
     hard_failures, resolvable_pending = partition_resolvable_blockers(
         gating.get("blockers_failed") or [], verdict=str(gating.get("verdict") or ""),
     )
+    needs_deep = _needs_deep_fields(item)
     risk = item.get("risk_annotation") or {"risks": []}
     efficacy = item.get("efficacy_context") or {}
     snapshot = efficacy.get("efficacy_snapshot") or {}
     development = efficacy.get("development_evidence")
     search = efficacy.get("evidence_search")
-    if (item.get("gating") or {}).get("verdict") != "exclude":
+    if needs_deep:
         _require(isinstance(development, list), f"{item.get('trial_id')}: development_evidence must be a list")
         _require(isinstance(search, dict), f"{item.get('trial_id')}: evidence_search is required")
         if search.get("status") not in {"found", "no_relevant_publication"}:
@@ -493,6 +572,10 @@ def normalized_report_analysis(item: dict[str, Any]) -> dict[str, Any]:
                 _require(evidence.get(key), f"{item.get('trial_id')}: development evidence {key} is required")
     vs_soc = efficacy.get("vs_soc") or {}
     summary = vs_soc.get("head_to_head_summary") or snapshot.get("applies_because") or ""
+    if not needs_deep and gating.get("verdict") in {"match", "conditional"}:
+        summary = summary or (
+            "Compact gater only; risk and efficacy were not requested for this analysis band."
+        )
     risks = []
     for entry in risk.get("risks") or []:
         narrative = entry.get("narrative") or []

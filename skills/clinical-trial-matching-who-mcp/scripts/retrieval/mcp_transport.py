@@ -89,12 +89,15 @@ def execute_who_workflow(
         if isinstance(item, dict)
     ):
         raise McpClientError("WHO MCP query audit is missing or incomplete")
-    registry_ids = [
+    registry_ids = list(dict.fromkeys(
         registry_id
         for hit in search.get("results") or []
-        if (registry_id := hit.get("primary_registry_id") or hit.get("id"))
-    ]
-    if detail_loader is None:
+        if (registry_id := str(hit.get("primary_registry_id") or hit.get("id") or "").strip())
+    ))
+    fetch_details = os.environ.get("MCP_FETCH_DETAILS", "1").strip() != "0"
+    if not fetch_details:
+        details: list[dict[str, Any]] = []
+    elif detail_loader is None:
         details = [
             client.call_tool("get_trial", {"registry_id": registry_id})
             for registry_id in registry_ids
@@ -110,5 +113,23 @@ def execute_who_workflow(
         "metadata": metadata,
         "search": search,
         "details": details,
+        "registry_ids": registry_ids,
         "executed_search_plan": executed_search_plan,
     }
+
+
+def load_trial_details(
+    client: McpTransport,
+    registry_ids: list[str],
+    detail_loader: DetailLoader | None = None,
+) -> list[dict[str, Any]]:
+    """Fetch get_trial payloads for a selected ID set after recall triage."""
+    unique = list(dict.fromkeys(str(value).strip() for value in registry_ids if str(value).strip()))
+    if not unique:
+        return []
+    if detail_loader is None:
+        return [
+            client.call_tool("get_trial", {"registry_id": registry_id})
+            for registry_id in unique
+        ]
+    return detail_loader(unique)

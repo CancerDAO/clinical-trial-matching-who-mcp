@@ -9,7 +9,7 @@ This skill changes the retrieval and registry-verification boundary. It does not
 
 ## Non-negotiable architecture
 
-`patient structure + original eight-dimensional plan` -> `real WHO MCP + optional authorized WHO registration-date delta` -> `one verifier/deduplicator` -> `direct-registry live status verification` -> `registry-status exclusion + generic structured hard-rule triage` -> `deterministic all-batch model executor` -> `trial-gater for every remaining trial` -> `risk/efficacy/evidence only for match or conditional` -> `decision-synthesizer` -> `mechanism classifier` -> `one patient-report renderer`.
+`patient structure + core-first search plan` -> `real WHO MCP + optional authorized WHO registration-date delta` -> `one verifier/deduplicator` -> `generic structured hard-rule triage` -> `A/B/C analysis priority` -> `direct-registry live status on the coverage target set` -> `deterministic all-batch model executor` -> `trial-gater for Band A (and Band B only in full coverage)` -> `risk/efficacy/evidence only for Band A match or conditional` -> `decision-synthesizer` -> `patient report.html` plus optional clinician audit HTML.
 
 A formal report has two executable stages separated by model work:
 
@@ -35,16 +35,21 @@ from `patient_summary.json`; variants and biomarkers come from `molecular.json`.
 Never infer country from locale, filenames, or hospitals. Cancer Buddy input
 therefore requires an explicit `matching_context.json`.
 
-The search plan must contain all original dimensions:
+The search plan must contain the core recall dimensions, and may expand to all eight:
+
+Core (default generated baseline):
 
 1. disease plus exact biomarker;
 2. pan-tumor biomarker recall;
+5. named approved/investigational agents;
+8. patient-country and relevant regional registry terms.
+
+Expansion (supplied `search_terms` or `SEARCH_EXPANDED_RECALL=1`):
+
 3. rational combination targets;
 4. pathway and resistance strategies;
-5. named approved/investigational agents;
 6. cell and biologic therapy;
-7. immune strategies;
-8. patient-country and relevant regional registry terms.
+7. immune strategies.
 
 Do not filter the first-pass recall by patient country.
 Keep the patient-facing disease label in its source language. Before WHO MCP
@@ -84,7 +89,7 @@ eligible for gater review and are disclosed as unverified.
 
 ## Model analysis contract
 
-For every candidate that passes conservative structured hard rules, `trial-gater` must run. For every `match` or `conditional` result:
+For every Band A candidate that passes conservative structured hard rules, `trial-gater` must run. In `--coverage full`, Band B also receives compact gater. For every Band A `match` or `conditional` result:
 
 - `trial-gater` evaluates criterion by criterion and applies R1-R5.
 - `trial-risk-annotator` grounds every risk in mechanism × patient cancer × patient state.
@@ -101,7 +106,7 @@ Feasibility remains operational and patient-relative. Geographic and financial d
 
 ## Report contract
 
-Use only `scripts/render/html_renderer.py`. The report follows the patient-triage layout, groups trials by mechanism and provides All / In-country access / Country record unverified / Overseas filters. Mechanism counts must update with the active filter.
+Use only `scripts/render/html_renderer.py`. Finalize writes `report.html` as the patient handoff: top decision paths, in-country recruiting matches, and facts to verify before contact. SHA-256 manifests, exclude cards, and mechanism dumps belong in `clinician-report.html`, which is emitted only for `--coverage full`. Mechanism counts on the clinician page must update with the active filter.
 
 Patients whose explicit current country is China receive a Simplified Chinese report; all other countries receive an English report. For China patients, deep and decision jobs must write patient-facing narratives directly in zh-CN. Formal finalize sends only residual English prose through the provider-neutral `TRANSLATION_MODEL_*` API configuration (or inherited `MODEL_*`). Translation never changes retrieval or clinical decisions. Use `TRANSLATION_MODE=required` when a China report must fail rather than continue with residual untranslated prose.
 
@@ -114,7 +119,8 @@ JSON, select a Top-N subset, or render patient-facing HTML directly.
 ```powershell
 python scripts/pipeline/run_formal_pipeline.py prepare `
   --patient patient.json --plan search-plan.json --db trials.db `
-  --mcp-python python --mcp-server server.py --run-dir run
+  --mcp-python python --mcp-server server.py --run-dir run `
+  --coverage patient
 ```
 
 Choose exactly one execution backend. For a remote API, select a provider and
@@ -157,28 +163,27 @@ coverage, and finalize before a validated merged bundle.
 
 ## Quality gates
 
-- Require all eight search dimensions when building a new plan.
+- Require core search dimensions when building a new plan; require all eight only for expanded recall.
 - Disclose MCP truncation and retain per-query pagination/truncation audit.
-- Reject formal reports without complete validated LLM subskill output.
+- Deduplicate `get_trial` by unique registry ID. `MCP_FETCH_DETAILS=0` skips details after search.
+- Reject formal reports without complete validated LLM subskill output for the selected coverage.
 - Reject risk output whose cancer context differs from the patient.
 - Reject efficacy estimates without applicability reasoning and evidence source.
 - Preserve database watermark and portal-delta limitation.
 - Do not expose credentials in project files.
 ## Formal readiness semantics
 
-A positive analysis-limit or prefilter-limit is validation-only. Both default to zero. Formal staged runs require every recalled trial to receive exactly one auditable disposition: deterministic hard exclusion, primary/secondary model Gater, or low-anchor deferred audit. Deferred audit is not an eligibility exclusion. Every Gater `match` or `conditional` verdict must receive validated risk, efficacy and development-evidence output.
+A positive analysis-limit or prefilter-limit is validation-only. Both default to zero. Formal staged runs require every recalled trial to receive exactly one auditable disposition: deterministic hard exclusion, model Gater, or deferred/Band C audit. Deferred audit is not an eligibility exclusion.
 
-Finalize uses one blocking gate and local warnings. It emits only
-`validation-report.html` when validated analysis integrity is incomplete.
-`formal_report_ready` depends on gate 1; gates 2 and 3 are visible warnings:
+Default `ANALYSIS_COVERAGE=patient` / `--coverage patient` sends only Band A to the model. Band A is a disease/molecular primary hit that is in-country or recruiting. If Band A is empty, the strongest Band B rows are promoted up to `PATIENT_DEEP_FALLBACK_LIMIT` (default 8). `--coverage full` still gates Band B with compact payloads but does not run deep analysis on those rows. Untagged historical jobs keep the old all-match/conditional deep contract.
 
-1. every recalled trial has a hard-rule or gater disposition, every non-excluded trial has complete deep analysis, and there are no budget omissions;
+Finalize uses two delivery gates. It emits only `validation-report.html` when analysis integrity is incomplete. `patient_report_ready` depends on the selected coverage's gater/deep contract; `formal_report_ready` additionally requires `--coverage full`:
+
+1. every recalled trial has a hard-rule, gater, or deferred disposition, every Band A non-excluded trial has complete deep analysis, and there are no budget omissions;
 2. retrieval truncation warns that the report covers analyzed recall only;
 3. freshness below level A/B warns that recruitment status and sites require
-   re-verification. Level A has a current WHO portal delta and a
-   complete direct-registry audit; level B permits a database snapshot within
-   `WHO_MCP_DATABASE_MAX_AGE_HOURS` and still requires the complete direct-registry
-   audit. A portal delta never substitutes for recruitment-status verification.
+   re-verification. Patient mode live-verifies Band A; full mode live-verifies
+   the hard-rule pass set. A portal delta never substitutes for recruitment-status verification.
 
 The clinical analysis language is not a gate. Chinese delivery is produced by
 translating the grounded English patient-facing report while preserving trial

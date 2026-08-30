@@ -15,6 +15,12 @@ REQUIRED_DIMENSIONS = (
     "disease_biomarker", "pan_tumor", "combination_targets", "pathway_resistance",
     "named_drug", "cell_therapy", "immune", "chinese_registry_terms",
 )
+CORE_DIMENSIONS = (
+    "disease_biomarker", "pan_tumor", "named_drug", "chinese_registry_terms",
+)
+EXPANSION_DIMENSIONS = (
+    "combination_targets", "pathway_resistance", "cell_therapy", "immune",
+)
 DIMENSION_HINTS = {
     "disease_biomarker": ("疾病", "突变特异", "disease", "exact"),
     "pan_tumor": ("泛化", "泛实体瘤", "pan-tumor", "pan tumor", "all comers"),
@@ -78,8 +84,12 @@ def validate_search_plan(plan: dict[str, Any], *, require_full_coverage: bool = 
                 )
     if require_full_coverage:
         coverage = search_plan_coverage(plan)
-        if coverage["missing"]:
-            errors.append("missing required recall dimensions: " + ", ".join(coverage["missing"]))
+        required = list(CORE_DIMENSIONS)
+        if str((plan.get("generation_audit") or {}).get("recall_scope") or "") == "expanded":
+            required = list(REQUIRED_DIMENSIONS)
+        missing = [dimension for dimension in required if dimension not in coverage["present"]]
+        if missing:
+            errors.append("missing required recall dimensions: " + ", ".join(missing))
     return errors
 
 
@@ -235,8 +245,16 @@ Patient:
 Return JSON only."""
 
 
+def _expanded_recall_requested(patient: dict[str, Any], search_terms: dict[str, Any]) -> bool:
+    flag = search_terms.get("expand_recall")
+    if flag in {True, 1, "1", "true", "yes"}:
+        return True
+    env = str(os.environ.get("SEARCH_EXPANDED_RECALL") or "").strip().casefold()
+    return env in {"1", "true", "yes", "expanded"}
+
+
 def build_baseline_search_plan(patient: dict[str, Any]) -> dict[str, Any]:
-    """Build a cancer-agnostic eight-branch baseline when no plan is supplied."""
+    """Build a cancer-agnostic core-first baseline; expand only when asked or needed."""
     cancer = str(patient.get("cancer_type") or "").strip()
     stage = str(patient.get("disease_stage") or patient.get("stage") or "").strip()
     mutations = []
@@ -260,6 +278,16 @@ def build_baseline_search_plan(patient: dict[str, Any]) -> dict[str, Any]:
         str(value).strip() for value in search_terms.get("pathway_terms") or []
         if str(value).strip()
     ]
+    cell_terms = [
+        str(value).strip() for value in (
+            search_terms.get("cell_therapy_terms") or search_terms.get("cell_therapy") or []
+        ) if str(value).strip()
+    ]
+    immune_terms = [
+        str(value).strip() for value in (
+            search_terms.get("immune_terms") or search_terms.get("immune") or []
+        ) if str(value).strip()
+    ]
     chinese_terms = [
         str(value).strip() for value in search_terms.get("chinese_terms") or []
         if str(value).strip()
@@ -269,6 +297,7 @@ def build_baseline_search_plan(patient: dict[str, Any]) -> dict[str, Any]:
         if value not in (None, "", "unknown")
     ]
     anchor = biomarker_terms[0] if biomarker_terms else "precision oncology"
+    expand_all = _expanded_recall_requested(patient, search_terms)
 
     try:
         max_terms = max(1, min(20, int(os.environ.get(
@@ -312,39 +341,49 @@ def build_baseline_search_plan(patient: dict[str, Any]) -> dict[str, Any]:
             "source": "both",
             "queries": queries(biomarker_terms or ["precision oncology"], "solid tumor"),
         },
-        {
+    ]
+    included_expansion: list[str] = []
+    if expand_all or combinations:
+        groups.append({
             "dimension": "combination_targets", "label": "3. Rational combination targets",
             "source": "both",
             "queries": queries(combinations or [f"{anchor} combination therapy"]),
-        },
-        {
+        })
+        included_expansion.append("combination_targets")
+    if expand_all or pathways:
+        groups.append({
             "dimension": "pathway_resistance", "label": "4. Pathway and resistance",
             "source": "both",
             "queries": queries(pathways or [f"{anchor} pathway resistance"]),
-        },
-        {
-            "dimension": "named_drug", "label": "5. Named agents and aliases",
-            "source": "both",
-            "queries": queries(named_agents or [f"{anchor} inhibitor"]),
-        },
-        {
+        })
+        included_expansion.append("pathway_resistance")
+    groups.append({
+        "dimension": "named_drug", "label": "5. Named agents and aliases",
+        "source": "both",
+        "queries": queries(named_agents or [f"{anchor} inhibitor"]),
+    })
+    if expand_all or cell_terms:
+        groups.append({
             "dimension": "cell_therapy", "label": "6. Cell and biologic therapy",
             "source": "both",
-            "queries": queries(["CAR-T", "TCR-T", "TIL", "cancer vaccine"]),
-        },
-        {
+            "queries": queries(cell_terms or ["CAR-T", "TCR-T", "TIL", "cancer vaccine"]),
+        })
+        included_expansion.append("cell_therapy")
+    if expand_all or immune_terms:
+        groups.append({
             "dimension": "immune", "label": "7. Immune strategies",
             "source": "both",
-            "queries": queries(["immunotherapy", "checkpoint inhibitor", "bispecific"]),
-        },
-        {
-            "dimension": "chinese_registry_terms", "label": "8. Chinese registry terms",
-            "source": "chictr",
-            "queries": queries(chinese_terms or [
-                f"{alias} {anchor}" for alias in disease["registry_aliases"][:3]
-            ] or [f"{primary_disease} {anchor}"], None),
-        },
-    ]
+            "queries": queries(immune_terms or ["immunotherapy", "checkpoint inhibitor", "bispecific"]),
+        })
+        included_expansion.append("immune")
+    groups.append({
+        "dimension": "chinese_registry_terms", "label": "8. Chinese registry terms",
+        "source": "chictr",
+        "queries": queries(chinese_terms or [
+            f"{alias} {anchor}" for alias in disease["registry_aliases"][:3]
+        ] or [f"{primary_disease} {anchor}"], None),
+    })
+    recall_scope = "expanded" if expand_all else "core"
     plan = {
         "schema_version": "clinical-search-plan-v1",
         "patient_id": patient.get("patient_id"),
@@ -358,19 +397,31 @@ def build_baseline_search_plan(patient: dict[str, Any]) -> dict[str, Any]:
         },
         "generation_audit": {
             "mode": "deterministic_baseline",
+            "recall_scope": recall_scope,
+            "core_dimensions": list(CORE_DIMENSIONS),
+            "included_expansion_dimensions": included_expansion,
             "max_terms_per_dimension": max_terms,
             "query_count": sum(len(group["queries"]) for group in groups),
             "requires_human_review": (
                 disease["requires_human_review"]
-                or not bool(named_agents and combinations and pathways)
+                or not bool(named_agents)
             ),
             "disease_normalization": disease,
             "limitations": (
-                "Named-agent, rational-combination, pathway, and Chinese synonym "
-                "recall is only exhaustive when matching_context.search_terms supplies them. "
+                "Default recall uses disease + biomarker, pan-tumor biomarker, and named-agent "
+                "dimensions. Combination, pathway, cell-therapy, and immune branches are added "
+                "only when matching_context.search_terms supplies them or SEARCH_EXPANDED_RECALL=1. "
                 "WHO queries use normalized English disease concepts; regional-registry "
                 "queries preserve source-language disease terms."
             ),
         },
     }
     return normalize_search_plan_for_patient(plan, patient)
+
+
+def build_expanded_search_plan(patient: dict[str, Any]) -> dict[str, Any]:
+    """Rebuild the baseline with every original recall branch."""
+    search_terms = dict(patient.get("search_terms") or {})
+    search_terms["expand_recall"] = True
+    expanded_patient = {**patient, "search_terms": search_terms}
+    return build_baseline_search_plan(expanded_patient)

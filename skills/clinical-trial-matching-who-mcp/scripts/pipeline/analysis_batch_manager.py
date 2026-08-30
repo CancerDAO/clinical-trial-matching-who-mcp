@@ -57,14 +57,18 @@ def _expected_ids(jobs: dict[str, Any]) -> list[str]:
 
 
 def combine_analysis_stages(
-    gating_trials: list[dict[str, Any]], deep_trials: list[dict[str, Any]]
+    gating_trials: list[dict[str, Any]],
+    deep_trials: list[dict[str, Any]],
+    deep_required_ids: list[str] | None = None,
 ) -> list[dict[str, Any]]:
     """Combine stage outputs into the existing analyzed_trials item shape."""
     gating_by_id = {str(item.get("trial_id") or "").strip(): item for item in gating_trials}
     deep_by_id = {str(item.get("trial_id") or "").strip(): item for item in deep_trials}
+    required_deep = None if deep_required_ids is None else set(deep_required_ids)
     deep_expected = {
         trial_id for trial_id, item in gating_by_id.items()
         if (item.get("gating") or {}).get("verdict") in {"match", "conditional"}
+        and (required_deep is None or trial_id in required_deep)
     }
     actual = set(deep_by_id)
     if actual != deep_expected:
@@ -99,6 +103,7 @@ def create_deep_jobs(
     deep_jobs = build_deep_analysis_jobs(
         patient, trials, gating_trials, skills_root,
         batch_size=batch_size or int(jobs.get("batch_size") or 5),
+        deep_required_ids=jobs.get("deep_required_trial_ids"),
     )
     write_json_atomic(out_path, deep_jobs)
     return {"output": str(out_path), "trials": deep_jobs["trial_count"], "validated": True}
@@ -125,9 +130,12 @@ def status(jobs_path: Path, output_dir: Path) -> dict[str, Any]:
     gating_trials, gating_errors = collect_trials(output_dir, "gater-batch-*.json")
     gating_actual = {str(item.get("trial_id") or "") for item in gating_trials}
     gating_missing = sorted(expected - gating_actual)
+    jobs_deep = jobs.get("deep_required_trial_ids")
+    required_deep = None if jobs_deep is None else set(jobs_deep)
     deep_expected = {
         str(item.get("trial_id") or "") for item in gating_trials
         if (item.get("gating") or {}).get("verdict") in {"match", "conditional"}
+        and (required_deep is None or str(item.get("trial_id") or "") in required_deep)
     }
     deep_trials, deep_errors = collect_trials(output_dir, "deep-batch-*.json")
     deep_actual = {str(item.get("trial_id") or "") for item in deep_trials}
@@ -195,7 +203,12 @@ def merge(
         gating_trials, gating_errors = collect_trials(output_dir, "gater-batch-*.json")
         deep_trials, deep_errors = collect_trials(deep_output_dir, "deep-batch-*.json")
         errors = gating_errors + deep_errors
-        trials = combine_analysis_stages(gating_trials, deep_trials) if not errors else []
+        trials = (
+            combine_analysis_stages(
+                gating_trials, deep_trials, jobs.get("deep_required_trial_ids")
+            )
+            if not errors else []
+        )
     if errors:
         raise ValueError("Invalid batch outputs: " + "; ".join(errors[:10]))
     decision_payload = load_json(decision_path)
@@ -219,7 +232,9 @@ def merge(
         "decision_report": decision,
     }
     expected = _expected_ids(jobs)
-    validate_analysis_bundle(bundle, patient, expected)
+    validate_analysis_bundle(
+        bundle, patient, expected, deep_required_ids=jobs.get("deep_required_trial_ids")
+    )
     write_json_atomic(out_path, bundle)
     return {"output": str(out_path), "trials": len(trials), "validated": True}
 

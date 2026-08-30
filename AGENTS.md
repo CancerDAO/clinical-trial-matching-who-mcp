@@ -6,7 +6,9 @@
 - Preserve patient location fields and keep retrieval global; apply country only when labeling domestic/international access.
 - Always call MCP metadata before search and carry `database_as_of` through the report.
 - Keep eligibility verdict, mechanism category, and feasibility score independent.
-- Use MCP `get_trial` details before eligibility gating.
+- Use MCP `get_trial` details before eligibility gating. Fetch unique registry IDs only; `MCP_FETCH_DETAILS=0` is an operator escape hatch after search.
+- Default generated recall is core-first. Do not expand combination/pathway/cell/immune branches unless the patient context or `SEARCH_EXPANDED_RECALL=1` asks for them.
+- Spend model work on Band A patient-actionable trials. Band B compact gater is full-coverage audit only. Band C is an auditable non-model disposition, not an eligibility exclusion.
 - Never store SSH passwords or clinical credentials in project files.
 - Run unit tests and skill validation after changes.
 
@@ -30,3 +32,5 @@
   the publication candidates attached to that trial.
 - Only `run_formal_pipeline.py` may orchestrate a formal run, and only
   `full_pipeline.py finalize` may promote a result to `report.html`.
+  `report.html` is the patient handoff; `clinician-report.html` is the
+  optional full-coverage audit workbook.

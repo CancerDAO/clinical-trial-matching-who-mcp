@@ -273,13 +273,151 @@ def render_html(p: dict[str, Any], path: Path) -> None:
  patient_summary=patient_summary_html(p,zh)
  decision_html=decision_report_html(p,zh)
  script="""function applyFilter(f){document.querySelectorAll('.mechanism-group').forEach(g=>{g.querySelectorAll('details.trial').forEach(x=>{const hide=f!=='all'&&x.dataset.access!==f;x.classList.toggle('is-hidden',hide);});const n=g.querySelectorAll('details.trial:not(.is-hidden)').length;g.classList.toggle('is-hidden',n===0);const c=g.querySelector('.cnt');c.textContent=n+' '+c.dataset.itemWord;});}document.querySelectorAll('.filters button').forEach(b=>b.addEventListener('click',()=>{document.querySelectorAll('.filters button').forEach(x=>x.classList.remove('on'));b.classList.add('on');applyFilter(b.dataset.filter);}));applyFilter('all');"""
- eyebrow=T(chr(20020)+chr(24202)+chr(35797)+chr(39564)+chr(21305)+chr(37197)+chr(25253)+chr(21578)+" · "+chr(24739)+chr(32773)+chr(29256),"Clinical trial matching report · Patient edition")
+ eyebrow=T(chr(20020)+chr(24202)+chr(35797)+chr(39564)+chr(21305)+chr(37197)+chr(25253)+chr(21578)+" · "+chr(20020)+chr(24202)+chr(23457)+chr(35745)+chr(29256),"Clinical trial matching report · Clinician / audit edition")
  database_label=T(chr(25968)+chr(25454)+chr(24211)+chr(26356)+chr(26032)+chr(26102)+chr(38388),"Database as of")
  schema_label=T("MCP 数据结构版本","MCP schema")
  delta_label=T("WHO 门户增量","WHO portal delta")
  trial_word=T("项试验","trial(s)")
  doc=f"""<!doctype html><html lang="{p['language']}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>{esc(title)} \u00b7 {esc(patient.get('patient_id'))}</title><style>{css}</style></head><body><main class="wrap"><header class="hero"><div class="eyebrow">{eyebrow}</div><h1>{esc(title)}</h1><div class="snap"><span>{esc(patient.get('patient_id'))}</span><span>{esc(patient.get('cancer_type'))} \u00b7 {esc(patient.get('stage'))}</span><span>{esc(' / '.join(patient.get('mutations') or []))}</span><span>{esc(loc)}</span></div></header><div class="disc">{esc(disclaimer)}</div>{f'<div class="disc">{esc(validation_notice)}</div>' if validation_notice else ''}<section class="overview"><div class="ov-grid">{ov}</div></section>{manifest_html}{patient_summary}{decision_html}<div class="filters">{filters}</div>{''.join(sections)}<footer>{database_label}: {esc(p['database_as_of'])} \u00b7 {esc(schema_label)} {esc(p['database_metadata'].get('schema_version'))} \u00b7 {esc(delta_label)}: {esc(delta.get('status'))}, {esc(delta.get('returned') if delta.get('returned') is not None else 0)} {esc(trial_word)}</footer></main><script>{script}</script></body></html>"""
  path.write_text(doc,encoding="utf-8")
+
+
+def _patient_action_trials(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    """Keep the patient page to decision paths plus in-country recruiting matches."""
+    trials = list(payload.get("trials") or [])
+    by_id = {str(trial.get("id") or ""): trial for trial in trials}
+    ordered: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for item in (payload.get("decision_report") or {}).get("decision_paths") or []:
+        trial_id = str((item or {}).get("trial_id") or "").strip()
+        trial = by_id.get(trial_id)
+        if trial and trial_id not in seen:
+            seen.add(trial_id)
+            row = dict(trial)
+            row["decision_path"] = item
+            ordered.append(row)
+    in_country = {
+        "domestic_named", "domestic_registry",
+    }
+    for trial in trials:
+        trial_id = str(trial.get("id") or "").strip()
+        if trial_id in seen:
+            continue
+        verdict = str((trial.get("gating") or {}).get("verdict") or "")
+        country = str((trial.get("country_assessment") or {}).get("class") or "")
+        band = str((trial.get("analysis_priority") or {}).get("band") or "A")
+        if verdict in {"match", "conditional"} and country in in_country and band != "C":
+            seen.add(trial_id)
+            ordered.append(trial)
+    return ordered
+
+
+def render_patient_html(payload: dict[str, Any], path: Path) -> None:
+    """Patient-facing page: what to verify next, not the audit workbook."""
+    if payload.get("language") not in {"zh-CN", "en"}:
+        raise ValueError("Report language must be 'zh-CN' or 'en'")
+    zh = payload["language"] == "zh-CN"
+    patient = payload["patient"]
+    loc = patient.get("country", "")
+    T = lambda z, e: z if zh else e
+    cards = []
+    for index, trial in enumerate(_patient_action_trials(payload), start=1):
+        gating = trial.get("gating") or {}
+        country = trial.get("country_assessment") or {}
+        access_key = str(country.get("class") or "")
+        if access_key == "domestic_named":
+            access = T(
+                f"{loc} 具名中心 {trial.get('patient_country_site_count', 0)} 个",
+                f"{trial.get('patient_country_site_count', 0)} named centre(s) in {loc}",
+            )
+        elif access_key == "domestic_registry":
+            access = T(f"{loc} 本土注册，具体中心待核实", f"Native {loc} registry; centre unverified")
+        elif access_key == "country_unverified":
+            access = T(f"仅有 {loc} 国家记录，不能确认中心", f"Only a {loc} country record is available")
+        else:
+            access = T("患者所在国家暂无地点证据", "No location evidence in patient country")
+        verdict = {
+            "match": T("值得优先核实", "Worth verifying first"),
+            "conditional": T("需补充资料后核实", "Verify after missing facts"),
+            "exclude": T("当前不适合", "Not suitable now"),
+        }.get(gating.get("verdict"), gating.get("verdict") or "")
+        path_info = trial.get("decision_path") or {}
+        why = (
+            str(path_info.get("rationale") or "").strip()
+            or str(trial.get("patient_display_rationale") or gating.get("rationale") or "").strip()
+        )
+        pending = path_info.get("blockers_pending") or gating.get("pending") or []
+        pending_html = ""
+        if pending:
+            items = "".join(f"<li>{esc(item)}</li>" for item in pending[:5])
+            pending_html = f"<h4>{T('联系前请核实', 'Verify before contact')}</h4><ul>{items}</ul>"
+        url = safe_external_url(trial.get("resolved_source_url"))
+        phases = [
+            str(value).strip() for value in (trial.get("phases") or [])
+            if str(value).strip().casefold() not in {"", "n/a", "na", "none", "null", "unknown"}
+        ]
+        phase_label = "/".join(phases) or T("阶段未注明", "Phase not reported")
+        status = str(trial.get("overall_status") or "").replace("_", " ").title()
+        cards.append(
+            f'<article class="card {esc(gating.get("verdict"))}" id="{esc(trial_anchor(trial.get("id")))}">'
+            f'<div class="rank">{index:02d}</div>'
+            f'<div class="body"><h3>{esc(trial.get("display_title") or trial.get("title") or trial.get("id"))}</h3>'
+            f'<p class="meta"><a href="{esc(url)}" target="_blank" rel="noopener">{esc(trial.get("id"))}</a>'
+            f' · {esc(phase_label)} · {esc(status)} · {esc(verdict)}</p>'
+            f'<p>{esc(why)}</p>{pending_html}'
+            f'<p class="next"><b>{T("下一步", "Next step")} · </b>{esc(access)}</p>'
+            f'</div></article>'
+        )
+    if not cards:
+        cards.append(
+            f'<article class="card empty"><div class="body"><p>'
+            f'{esc(T("当前没有可优先核实的试验。请与医生讨论标准治疗，并确认病历中缺失的关键检查。", "There is no first-line trial to verify yet. Discuss standard care and missing tests with the treating clinician."))}'
+            f'</p></div></article>'
+        )
+    warnings = []
+    for warning in payload.get("report_warnings") or []:
+        if isinstance(warning, dict):
+            warnings.append(str(warning.get("message_zh" if zh else "message_en") or warning.get("code") or ""))
+    disclaimer = T(
+        "本页只列出值得和医生一起核实的试验，不是治疗建议或入组结论。中心、名额和完整入排标准必须由研究中心确认。",
+        "This page lists trials worth verifying with a clinician. It is not medical advice or an enrollment decision. Sites, slots and full eligibility require study-centre confirmation.",
+    )
+    if warnings:
+        disclaimer += " " + " ".join(item for item in warnings if item)
+    summary = patient_summary_html(payload, zh)
+    css = """
+:root{--bg:#f7f4ee;--text:#1f211c;--muted:#5e635b;--brand:#173d5a;--wine:#7b263e;--card:#fff}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:16px/1.6 Arial,'Microsoft YaHei',sans-serif}
+.wrap{max-width:760px;margin:auto;padding:24px 16px 72px}.hero{background:#173d5a;color:#fff;padding:28px;border-radius:10px}
+.hero .eyebrow{font-size:12px;letter-spacing:.08em;text-transform:uppercase;opacity:.8}
+.hero h1{margin:8px 0 12px;font-size:28px}.snap{display:flex;flex-wrap:wrap;gap:8px}
+.snap span{border:1px solid #ffffff55;padding:3px 9px;font-size:12px}
+.disc{margin:16px 0;padding:12px 14px;background:#fff4dc;border-left:4px solid #8e5d0b}
+.card{display:flex;gap:14px;background:var(--card);border:1px solid #d9d4c8;border-radius:10px;margin:14px 0;padding:16px}
+.card.match{border-left:5px solid #245c43}.card.conditional{border-left:5px solid #8e5d0b}
+.rank{font-size:22px;font-weight:700;color:var(--brand);width:42px}
+.body{flex:1;min-width:0}h3{margin:0 0 6px;font-size:18px}.meta{color:var(--muted);font-size:13px}
+.next{background:#f3eee4;border-left:3px solid var(--wine);padding:8px 10px}
+footer{margin-top:28px;color:var(--muted);font-size:12px;border-top:1px solid #d9d4c8;padding-top:12px}
+"""
+    title = T("您可以优先核实的临床试验", "Clinical trials to verify first")
+    eyebrow = T("临床试验匹配报告 · 患者版", "Clinical trial matching report · Patient edition")
+    empty_note = T(
+        "完整审核清单和排除试验见临床版报告，不会自动作为患者交付页。",
+        "The clinician audit page is separate and is not the patient handoff.",
+    )
+    document = f"""<!doctype html><html lang="{esc(payload['language'])}"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{esc(title)} · {esc(patient.get('patient_id'))}</title><style>{css}</style></head>
+<body><main class="wrap"><header class="hero"><div class="eyebrow">{esc(eyebrow)}</div>
+<h1>{esc(title)}</h1><div class="snap"><span>{esc(patient.get('patient_id'))}</span>
+<span>{esc(patient.get('cancer_type'))} · {esc(patient.get('stage'))}</span>
+<span>{esc(' / '.join(patient.get('mutations') or []))}</span><span>{esc(loc)}</span></div>
+</header><div class="disc">{esc(disclaimer)}</div>{summary}{''.join(cards)}
+<p class="disc">{esc(empty_note)}</p>
+<footer>{T('数据库更新时间', 'Database as of')}: {esc(payload.get('database_as_of'))}</footer>
+</main></body></html>"""
+    path.write_text(document, encoding="utf-8")
 
 
 def render_validation_html(payload: dict[str, Any], path: Path) -> None:

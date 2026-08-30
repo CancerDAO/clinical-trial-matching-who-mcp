@@ -142,7 +142,7 @@ Formal execution uses bounded stage-specific concurrency. Recommended initial
 MiniMax settings are:
 
 ```bash
-export MODEL_GATER_BATCH_SIZE=3
+export MODEL_GATER_BATCH_SIZE=8
 export MODEL_DEEP_BATCH_SIZE=2
 export MODEL_GATER_CONCURRENCY=3
 export MODEL_DEEP_CONCURRENCY=3

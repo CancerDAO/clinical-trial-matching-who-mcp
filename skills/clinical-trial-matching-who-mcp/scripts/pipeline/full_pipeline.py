@@ -34,12 +34,16 @@ from analysis_contract import (
     build_analysis_jobs, load_json, normalized_report_analysis, report_language,
     validate_analysis_bundle,
 )
+from analysis_priority import (
+    annotate_analysis_priority, coverage_mode, gater_trials_for_coverage,
+    partition_priority, promote_fallback_priority,
+)
 from io_utils import write_json_atomic
 from patient_input import load_patient_input
 from generic_hard_rules import apply_generic_hard_rules
 from recall_triage import stratify_recall_candidates
 from feasibility import WEIGHTS, compute_feasibility
-from html_renderer import render_html, render_validation_html
+from html_renderer import render_html, render_patient_html, render_validation_html
 from report_translation import concise_patient_text, maybe_translate_report
 from mcp_http_client import run_remote_who_workflow
 from mcp_stdio_client import run_who_workflow
@@ -207,6 +211,12 @@ def _portal_audit_is_current(portal: dict[str, Any]) -> bool:
     )
 
 
+def _live_expected_count(prepared: dict[str, Any]) -> int:
+    if "live_registry_target_ids" in prepared:
+        return len(prepared.get("live_registry_target_ids") or [])
+    return len(prepared.get("all_verified_trials") or [])
+
+
 def _database_snapshot_is_current(prepared: dict[str, Any]) -> bool:
     raw = str(prepared.get("database_as_of") or "")
     if not raw:
@@ -220,7 +230,7 @@ def _database_snapshot_is_current(prepared: dict[str, Any]) -> bool:
         return False
     age = (dt.datetime.now().astimezone() - watermark.astimezone()).total_seconds() / 3600
     live = prepared.get("live_registry_audit") or {}
-    expected = len(prepared.get("all_verified_trials") or [])
+    expected = _live_expected_count(prepared)
     attempted = int(live.get("attempted") or 0)
     errors = int(live.get("errors") or 0)
     unknown = int(live.get("unknown") or 0)
@@ -243,7 +253,7 @@ def data_freshness_assessment(prepared: dict[str, Any]) -> dict[str, Any]:
     portal_current = _portal_audit_is_current(prepared.get("portal_delta") or {})
     snapshot_current = _database_snapshot_is_current(prepared)
     live = prepared.get("live_registry_audit") or {}
-    expected = len(prepared.get("all_verified_trials") or [])
+    expected = _live_expected_count(prepared)
     attempted = int(live.get("attempted") or 0)
     errors = int(live.get("errors") or 0)
     unknown = int(live.get("unknown") or 0)
@@ -315,6 +325,17 @@ def analysis_coverage_audit(
         trial_id for trial_id, item in by_id.items()
         if (item.get("gating") or {}).get("verdict") in {"match", "conditional"}
     }
+    candidates = prepared.get("analysis_candidates") or []
+    tagged = any(isinstance(row.get("analysis_priority"), dict) for row in candidates)
+    if tagged:
+        deep_expected_ids = {
+            str(row.get("id") or "").strip()
+            for row in candidates
+            if (row.get("analysis_priority") or {}).get("deep_required")
+            and str(row.get("id") or "").strip() in non_excluded_ids
+        }
+    else:
+        deep_expected_ids = set(non_excluded_ids)
     risk_ids = {
         trial_id for trial_id, item in by_id.items()
         if isinstance(item.get("risk_annotation"), dict)
@@ -330,9 +351,9 @@ def analysis_coverage_audit(
     }
     disposition_complete = dispositions_disjoint and disposition_ids == recall_ids
     deep_complete = (
-        risk_ids == non_excluded_ids
-        and efficacy_ids == non_excluded_ids
-        and evidence_ids == non_excluded_ids
+        risk_ids == deep_expected_ids
+        and efficacy_ids == deep_expected_ids
+        and evidence_ids == deep_expected_ids
     )
     return {
         "recall_count": len(recall_ids),
@@ -352,11 +373,11 @@ def analysis_coverage_audit(
         ),
         "missing_disposition_ids": sorted(recall_ids - disposition_ids),
         "unexpected_disposition_ids": sorted(disposition_ids - recall_ids),
-        "missing_risk_ids": sorted(non_excluded_ids - risk_ids),
-        "missing_efficacy_ids": sorted(non_excluded_ids - efficacy_ids),
-        "missing_evidence_ids": sorted(non_excluded_ids - evidence_ids),
+        "missing_risk_ids": sorted(deep_expected_ids - risk_ids),
+        "missing_efficacy_ids": sorted(deep_expected_ids - efficacy_ids),
+        "missing_evidence_ids": sorted(deep_expected_ids - evidence_ids),
         "extra_deep_analysis_ids": sorted(
-            (risk_ids | efficacy_ids | evidence_ids) - non_excluded_ids
+            (risk_ids | efficacy_ids | evidence_ids) - deep_expected_ids
         ),
         "disposition_equation_valid": disposition_complete,
         "deep_analysis_equations_valid": deep_complete,
@@ -478,13 +499,15 @@ def prepare(
     database: Path | None = None, server_python: str = "", server_script: Path | None = None,
     mcp_transport: str = "stdio", mcp_url: str = "", mcp_api_key: str = "",
     max_per_query: int = 5000, total_limit: int = 20000,
-    prefilter_limit: int = 0, analysis_limit: int = 0, batch_size: int = 5,
+    prefilter_limit: int = 0, analysis_limit: int = 0, batch_size: int = 8,
     portal_delta_path: Path | None = None,
     portal_delta_mode: str = "off", live_registry_verification: bool = False,
     report_language_override: str | None = None,
     patient_country_override: str | None = None,
+    coverage: str | None = None,
 ) -> dict[str, Any]:
     patient, patient_input_audit = load_patient_input(patient_path)
+    mode = coverage_mode(coverage)
     if patient_country_override:
         patient["country"] = str(patient_country_override).strip()
         patient_input_audit["patient_country_override"] = patient["country"]
@@ -577,37 +600,56 @@ def prepare(
     }
     for trial in verified:
         trial["resolved_source_url"] = resolved_trial_url(trial)
+        trial["feasibility"] = compute_feasibility(trial, patient).__dict__
+        trial["mechanism_category"] = classify_mechanism(trial, patient=patient)
+        trial["country_assessment"] = assess_country_evidence(trial, patient)
+    triage = apply_generic_hard_rules(patient, verified)
+    generic_hard_excluded = list(triage["hard_exclude"])
+    gater_pool = list(triage["pass_to_gater"])
+    recall_triage = stratify_recall_candidates(patient, gater_pool)
+    remaining = (
+        list(recall_triage["gater_primary"])
+        + list(recall_triage["gater_secondary"])
+        + list(recall_triage["deferred_audit"])
+    )
+    remaining = annotate_analysis_priority(patient, remaining)
+    remaining = promote_fallback_priority(remaining)
+    bands = partition_priority(remaining)
+    if mode == "full":
+        live_input = remaining
+        live_scope = "hard_rule_pass"
+    else:
+        live_input = list(bands["A"])
+        live_scope = "band_a"
+    live_target_ids = [str(trial.get("id") or "") for trial in live_input if str(trial.get("id") or "")]
     if live_registry_verification:
         live = verify_and_partition(
-            verified,
+            live_input,
             workers=int(os.environ.get("LIVE_REGISTRY_CONCURRENCY", "8")),
             timeout=float(os.environ.get("LIVE_REGISTRY_TIMEOUT_SECONDS", "20")),
             patient=patient,
         )
-        verified = live["active_or_unknown"] + live["inactive"]
-        live_inactive_ids = {
-            str(trial.get("id") or "") for trial in live["inactive"]
+        live_by_id = {
+            str(trial.get("id") or ""): trial
+            for trial in live["active_or_unknown"] + live["inactive"]
         }
+        remaining = [live_by_id.get(str(trial.get("id") or ""), trial) for trial in remaining]
+        live_inactive_ids = {str(trial.get("id") or "") for trial in live["inactive"]}
         live_audit = live["audit"]
+        live_audit["scope"] = live_scope
+        live_audit["target_count"] = len(live_input)
     else:
         live_inactive_ids = set()
         live_audit = {
             "attempted": 0, "active": 0, "inactive": 0, "unknown": 0,
             "errors": 0, "complete": False, "policy": "Not executed",
+            "scope": "not_executed", "target_count": 0,
         }
-    for trial in verified:
-        trial["feasibility"] = compute_feasibility(trial, patient).__dict__
-        trial["mechanism_category"] = classify_mechanism(trial, patient=patient)
-        trial["country_assessment"] = assess_country_evidence(trial, patient)
-        trial["resolved_source_url"] = resolved_trial_url(trial)
-    triage = apply_generic_hard_rules(patient, verified)
     registry_inactive = []
-    generic_hard_excluded = []
-    for trial in triage["hard_exclude"]:
-        generic_hard_excluded.append(trial)
-    gater_pool = []
-    for trial in triage["pass_to_gater"]:
+    still_open = []
+    for trial in remaining:
         if str(trial.get("id") or "") in live_inactive_ids:
+            trial = dict(trial)
             trial["hard_excluded"] = True
             trial["exclude_reason"] = "Direct registry explicitly reports a non-enrolling status."
             trial["registry_status_rule"] = {
@@ -616,19 +658,57 @@ def prepare(
             }
             registry_inactive.append(trial)
         else:
-            gater_pool.append(trial)
+            still_open.append(trial)
     hard_excluded = generic_hard_excluded + registry_inactive
-    recall_triage = stratify_recall_candidates(patient, gater_pool)
-    gater_primary = sorted(recall_triage["gater_primary"], key=_candidate_rank)
-    gater_secondary = sorted(recall_triage["gater_secondary"], key=_candidate_rank)
-    deferred_audit = sorted(recall_triage["deferred_audit"], key=_candidate_rank)
-    model_workload = gater_primary + gater_secondary
+    still_open = annotate_analysis_priority(patient, still_open)
+    still_open = promote_fallback_priority(still_open)
+    gater_selected = gater_trials_for_coverage(still_open, mode)
+    selected_ids = _trial_ids(gater_selected)
+    deferred_audit = [
+        trial for trial in still_open if str(trial.get("id") or "") not in selected_ids
+    ]
+    gater_primary = sorted(
+        [
+            trial for trial in gater_selected
+            if (trial.get("recall_triage") or {}).get("tier") == "gater_primary"
+        ],
+        key=_candidate_rank,
+    )
+    gater_secondary = sorted(
+        [
+            trial for trial in gater_selected
+            if (trial.get("recall_triage") or {}).get("tier") == "gater_secondary"
+        ],
+        key=_candidate_rank,
+    )
+    deferred_audit = sorted(deferred_audit, key=_candidate_rank)
+    model_workload = sorted(gater_selected, key=_candidate_rank)
     prefiltered, prefilter_audit = deterministic_prefilter(model_workload, prefilter_limit)
     prefilter_audit.update({
-        "version": "deterministic-recall-triage-v2",
+        "version": "deterministic-recall-triage-v3",
+        "coverage_mode": mode,
         "deferred_audit_count": len(deferred_audit),
         "budget_omitted_count": 0,
         "recall_triage": recall_triage["audit"],
+        "analysis_priority": {
+            "band_a": len([
+                trial for trial in still_open
+                if (trial.get("analysis_priority") or {}).get("band") == "A"
+            ]),
+            "band_b": len([
+                trial for trial in still_open
+                if (trial.get("analysis_priority") or {}).get("band") == "B"
+            ]),
+            "band_c": len([
+                trial for trial in still_open
+                if (trial.get("analysis_priority") or {}).get("band") == "C"
+            ]),
+            "promoted_ids": [
+                str(trial.get("id") or "")
+                for trial in still_open
+                if (trial.get("analysis_priority") or {}).get("promoted")
+            ],
+        },
     })
     candidates = select_analysis_candidates(prefiltered, analysis_limit)
     query_audit = search.get("query_audit") or []
@@ -642,12 +722,14 @@ def prepare(
             if isinstance(item, dict)
         )
     )
+    disposition_ids = _trial_ids(hard_excluded) | _trial_ids(candidates) | _trial_ids(deferred_audit)
     no_budget_omissions = (
         len(candidates) == len(model_workload)
-        and len(model_workload) + len(deferred_audit) == len(gater_pool)
+        and disposition_ids == _trial_ids(verified)
     )
     analysis_scope = "staged_complete" if no_budget_omissions else "validation_subset"
     jobs = build_analysis_jobs(patient, candidates, SKILLS_ROOT, batch_size=batch_size)
+    jobs["coverage_mode"] = mode
     payload = {
         "schema_version": "generic-who-mcp-prepared-v1",
         "created_at": dt.datetime.now().astimezone().isoformat(timespec="seconds"),
@@ -669,8 +751,10 @@ def prepare(
         "deduplication_audit": deduplication_audit,
         "portal_delta": portal_audit,
         "live_registry_audit": live_audit,
+        "live_registry_target_ids": live_target_ids if live_registry_verification else [],
         "all_verified_trials": verified,
         "analysis_workflow": "gater_then_deep_analysis",
+        "coverage_mode": mode,
         "hard_rule_triage": {
             "ruleset_version": triage["ruleset_version"],
             "input_count": len(verified),
@@ -690,6 +774,7 @@ def prepare(
         "analysis_scope": analysis_scope,
         "retrieval_complete": retrieval_complete,
         "data_freshness": {},
+        "patient_report_ready": False,
         "formal_report_ready": False,
         "guardrail": "Run canonical LLM subskills and finalize with a validated analysis bundle.",
     }
@@ -704,13 +789,26 @@ def prepare(
     write_json_atomic(out_dir / "prepared.json", payload)
     write_json_atomic(out_dir / "analysis_jobs.json", jobs)
     write_json_atomic(out_dir / "recall_funnel_audit.json", {
-        "schema_version": "recall-funnel-audit-v1",
+        "schema_version": "recall-funnel-audit-v2",
         "created_at": payload["created_at"],
+        "coverage_mode": mode,
         "recall_count": len(verified),
         "hard_excluded_ids": sorted(_trial_ids(hard_excluded)),
         "gater_primary_ids": sorted(_trial_ids(gater_primary)),
         "gater_secondary_ids": sorted(_trial_ids(gater_secondary)),
         "deferred_audit_ids": sorted(_trial_ids(deferred_audit)),
+        "band_a_ids": sorted(
+            _trial_ids([
+                trial for trial in still_open
+                if (trial.get("analysis_priority") or {}).get("band") == "A"
+            ])
+        ),
+        "band_b_ids": sorted(
+            _trial_ids([
+                trial for trial in still_open
+                if (trial.get("analysis_priority") or {}).get("band") == "B"
+            ])
+        ),
         "triage": recall_triage["audit"],
         "portal_delta_zero_result_assessment": portal_audit.get(
             "zero_result_assessment"
@@ -724,13 +822,26 @@ def finalize(*, prepared_path: Path, analysis_path: Path, out_dir: Path) -> dict
     analysis_bundle = load_json(analysis_path)
     patient = prepared["patient"]
     candidates = prepared["analysis_candidates"]
-    by_id = validate_analysis_bundle(analysis_bundle, patient, prepared["analysis_candidate_ids"])
+    deep_required_ids = [
+        str(trial.get("id") or "")
+        for trial in candidates
+        if (trial.get("analysis_priority") or {}).get("deep_required")
+    ] or None
+    if not any(isinstance(trial.get("analysis_priority"), dict) for trial in candidates):
+        deep_required_ids = None
+    by_id = validate_analysis_bundle(
+        analysis_bundle, patient, prepared["analysis_candidate_ids"],
+        deep_required_ids=deep_required_ids,
+    )
     coverage_audit = analysis_coverage_audit(prepared, by_id)
     language = _language(patient)
     trials: list[dict[str, Any]] = []
     for source in candidates:
         trial = dict(source)
-        normalized = normalized_report_analysis(by_id[trial["id"]])
+        analysis_item = dict(by_id[trial["id"]])
+        if trial.get("analysis_priority"):
+            analysis_item["analysis_priority"] = trial["analysis_priority"]
+        normalized = normalized_report_analysis(analysis_item)
         trial["gating"] = normalized["gating"]
         trial["risks"] = normalized["risks"]
         trial["risk_context"] = [
@@ -784,7 +895,10 @@ def finalize(*, prepared_path: Path, analysis_path: Path, out_dir: Path) -> dict
     # Only analysis integrity blocks patient-card rendering. Retrieval
     # completeness, freshness and language consistency remain prominent,
     # auditable warnings because they are local limitations, not corrupt data.
-    formal_ready = quality_gates["complete_analysis"]
+    stored_mode = str(prepared.get("coverage_mode") or "").strip()
+    mode = stored_mode if stored_mode in {"patient", "full"} else "full"
+    patient_ready = quality_gates["complete_analysis"]
+    formal_ready = patient_ready and mode == "full"
     report_warnings: list[dict[str, str]] = []
     if not quality_gates["complete_retrieval"]:
         report_warnings.append({
@@ -817,30 +931,35 @@ def finalize(*, prepared_path: Path, analysis_path: Path, out_dir: Path) -> dict
         "coverage_audit": coverage_audit,
         "quality_gates": quality_gates,
         "gate_policy": {
-            "complete_analysis": "blocking",
+            "patient_analysis_complete": "blocking",
+            "complete_analysis": "blocking" if mode == "full" else "coverage_mode",
             "complete_retrieval": "warning",
             "current_data_snapshot": "warning",
         },
         "warnings": report_warnings,
+        "coverage_mode": mode,
+        "patient_report_ready": patient_ready,
         "formal_report_ready": formal_ready,
     }
     payload = {
         "schema_version": "generic-who-mcp-final-v1",
         "analysis_schema_version": analysis_bundle["schema_version"],
         "analysis_provenance": analysis_bundle["analysis_provenance"],
+        "coverage_mode": mode,
+        "patient_report_ready": patient_ready,
         "formal_report_ready": formal_ready,
         "report_mode": (
-            "formal_with_warnings" if formal_ready and report_warnings
-            else "formal" if formal_ready else "validation"
+            "formal_with_warnings" if patient_ready and report_warnings
+            else "formal" if patient_ready else "validation"
         ),
         "quality_gates": quality_gates,
         "gate_policy": run_manifest["gate_policy"],
         "report_warnings": report_warnings,
         "run_manifest": run_manifest,
         "stages": [
-            "patient_structuring", "8-dimension_MCP_recall", "canonical_registry_deduplication",
-            "get_trial_verification", "original_trial_gater", "feasibility_scoring",
-            "original_risk_annotator", "original_efficacy_contextualizer",
+            "patient_structuring", "core_or_expanded_MCP_recall", "canonical_registry_deduplication",
+            "get_trial_verification", "analysis_priority", "original_trial_gater",
+            "feasibility_scoring", "original_risk_annotator", "original_efficacy_contextualizer",
             "original_decision_synthesizer", "mechanism_classification", "patient_report",
         ],
         "patient": patient,
@@ -855,7 +974,11 @@ def finalize(*, prepared_path: Path, analysis_path: Path, out_dir: Path) -> dict
         "recall_count": len(prepared["all_verified_trials"]),
         "analyzed_count": len(trials),
         "gater_analyzed_count": len(candidates),
-        "deep_analyzed_count": sum(1 for trial in trials if trial["gating"]["verdict"] in {"match", "conditional"}),
+        "deep_analyzed_count": sum(
+            1 for trial in trials
+            if trial["gating"]["verdict"] in {"match", "conditional"}
+            and (trial.get("analysis_priority") or {}).get("deep_required", True)
+        ),
         "hard_excluded_count": len(prepared.get("hard_excluded_trials") or []),
         "deferred_audit_count": len(prepared.get("deferred_audit_trials") or []),
         "deferred_audit_trials": prepared.get("deferred_audit_trials") or [],
@@ -867,7 +990,7 @@ def finalize(*, prepared_path: Path, analysis_path: Path, out_dir: Path) -> dict
         "generated_at": dt.datetime.now().astimezone().isoformat(timespec="seconds"),
     }
     out_dir.mkdir(parents=True, exist_ok=True)
-    if formal_ready:
+    if patient_ready:
         payload = maybe_translate_report(
             payload, cache_path=out_dir / "report-translations.json"
         )
@@ -906,11 +1029,16 @@ def finalize(*, prepared_path: Path, analysis_path: Path, out_dir: Path) -> dict
     (out_dir / "run-manifest.json").write_text(
         json.dumps(run_manifest, ensure_ascii=False, indent=2), encoding="utf-8"
     )
-    if formal_ready:
+    if patient_ready:
         (out_dir / "validation-report.html").unlink(missing_ok=True)
-        render_html(payload, out_dir / "report.html")
+        render_patient_html(payload, out_dir / "report.html")
+        if formal_ready:
+            render_html(payload, out_dir / "clinician-report.html")
+        else:
+            (out_dir / "clinician-report.html").unlink(missing_ok=True)
     else:
         (out_dir / "report.html").unlink(missing_ok=True)
+        (out_dir / "clinician-report.html").unlink(missing_ok=True)
         render_validation_html(payload, out_dir / "validation-report.html")
     return payload
 
@@ -943,7 +1071,12 @@ def main() -> None:
     prepare_parser.add_argument("--total-limit", type=int, default=20000)
     prepare_parser.add_argument("--prefilter-limit", type=int, default=0)
     prepare_parser.add_argument("--analysis-limit", type=int, default=0)
-    prepare_parser.add_argument("--batch-size", type=int, default=5)
+    prepare_parser.add_argument("--batch-size", type=int, default=8)
+    prepare_parser.add_argument(
+        "--coverage", choices=("patient", "full"),
+        default=os.environ.get("ANALYSIS_COVERAGE", "patient"),
+        help="patient analyzes Band A only; full keeps the audit gater workload.",
+    )
     prepare_parser.add_argument("--portal-delta")
     finalize_parser = sub.add_parser("finalize")
     finalize_parser.add_argument("--prepared", required=True)
@@ -965,7 +1098,7 @@ def main() -> None:
             out_dir=Path(args.out),
             max_per_query=args.max_per_query, total_limit=args.total_limit,
             prefilter_limit=args.prefilter_limit, analysis_limit=args.analysis_limit,
-            batch_size=args.batch_size,
+            batch_size=args.batch_size, coverage=args.coverage,
             portal_delta_path=Path(args.portal_delta) if args.portal_delta else None,
         )
         summary = {

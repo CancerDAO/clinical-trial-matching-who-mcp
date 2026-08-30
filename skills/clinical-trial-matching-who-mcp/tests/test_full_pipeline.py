@@ -407,6 +407,29 @@ class GenericPipelineContractTests(unittest.TestCase):
         self.assertEqual(audit["missing_efficacy_ids"], ["T2"])
         self.assertEqual(audit["missing_evidence_ids"], ["T2"])
 
+    def test_coverage_audit_skips_deep_for_tagged_band_b(self):
+        prepared = {
+            "all_verified_trials": [{"id": "A"}, {"id": "B"}, {"id": "C"}],
+            "hard_excluded_trials": [],
+            "deferred_audit_trials": [{"id": "C"}],
+            "analysis_candidates": [
+                {"id": "A", "analysis_priority": {"band": "A", "deep_required": True}},
+                {"id": "B", "analysis_priority": {"band": "B", "deep_required": False}},
+            ],
+        }
+        by_id = {
+            "A": {
+                "gating": {"verdict": "match"},
+                "risk_annotation": {},
+                "efficacy_context": {"evidence_search": {}, "development_evidence": []},
+            },
+            "B": {"gating": {"verdict": "match"}},
+        }
+        audit = pipeline.analysis_coverage_audit(prepared, by_id)
+        self.assertTrue(audit["disposition_equation_valid"])
+        self.assertTrue(audit["deep_analysis_equations_valid"])
+        self.assertEqual(audit["missing_risk_ids"], [])
+
     def test_candidate_selection_is_mechanism_diverse_not_disease_coded(self):
         trials = []
         for index, category in enumerate(("targeted_therapy", "immune_combination", "cell_and_biologic", "other")):
@@ -429,6 +452,7 @@ class GenericPipelineContractTests(unittest.TestCase):
         })
         self.assertEqual(compact["id"], "T1")
         self.assertIn("parsed_criteria", compact)
+        self.assertNotIn("eligibility_full", compact)
         self.assertIn("patient_country_sites", compact)
         self.assertNotIn("sites", compact)
         self.assertNotIn("country_records", compact)

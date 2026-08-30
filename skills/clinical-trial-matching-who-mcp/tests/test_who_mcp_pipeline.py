@@ -16,9 +16,9 @@ from disease_concepts import resolve_disease_terms
 from html_renderer import render_html
 from mechanism_categories import classify_mechanism
 from search_plan import (
-    build_baseline_search_plan, compile_search_plan_for_mcp,
-    normalize_search_plan_for_patient, search_plan_coverage, validate_search_plan,
-    validate_search_plan_for_patient,
+    CORE_DIMENSIONS, build_baseline_search_plan, build_expanded_search_plan,
+    compile_search_plan_for_mcp, normalize_search_plan_for_patient, search_plan_coverage,
+    validate_search_plan, validate_search_plan_for_patient,
 )
 from who_mcp_adapter import build_mcp_requests, build_portal_delta_contract, merge_sources
 from who_portal_delta import _query_variants
@@ -229,8 +229,21 @@ class WhoMcpPipelineTests(unittest.TestCase):
             for item in variants
         ))
 
-    def test_baseline_plan_covers_all_eight_dimensions(self):
+    def test_baseline_plan_defaults_to_core_dimensions(self):
         plan = build_baseline_search_plan({
+            "patient_id": "PT-1", "cancer_type": "pancreatic cancer",
+            "stage": "IV", "mutations": ["KRAS G12D"],
+            "search_terms": {"named_agents": ["ASP3082"]},
+        })
+        self.assertEqual(validate_search_plan(plan), [])
+        self.assertEqual(plan["generation_audit"]["recall_scope"], "core")
+        present = set(search_plan_coverage(plan)["present"])
+        self.assertTrue(set(CORE_DIMENSIONS) <= present)
+        self.assertNotIn("cell_therapy", present)
+        self.assertFalse(plan["generation_audit"]["requires_human_review"])
+
+    def test_expanded_plan_covers_all_eight_dimensions(self):
+        plan = build_expanded_search_plan({
             "patient_id": "PT-1", "cancer_type": "pancreatic cancer",
             "stage": "IV", "mutations": ["KRAS G12D"],
             "search_terms": {
@@ -242,7 +255,7 @@ class WhoMcpPipelineTests(unittest.TestCase):
         })
         self.assertEqual(validate_search_plan(plan), [])
         self.assertEqual(search_plan_coverage(plan)["missing"], [])
-        self.assertFalse(plan["generation_audit"]["requires_human_review"])
+        self.assertEqual(plan["generation_audit"]["recall_scope"], "expanded")
 
     def test_baseline_registry_branch_never_uses_a_disease_only_query(self):
         patient = {

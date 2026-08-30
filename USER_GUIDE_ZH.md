@@ -10,16 +10,15 @@
 
 ```text
 患者结构化 / Cancer Buddy 病历包
--> 八维搜索计划
+-> 核心搜索计划（可选扩展到八维）
 -> WHO ICTRP MCP 数据库检索
 -> WHO Portal 水位线后增量（可选且需授权）
--> 详情获取、统一去重、直接注册库实时核验
--> 保守的通用硬规则排除
--> trial-gater 逐试验资格判断
--> risk + efficacy + 论文证据分析
+-> 详情获取、统一去重、硬规则、A/B/C 优先级
+-> 覆盖目标集的直接注册库实时核验
+-> trial-gater（默认仅 Band A）
+-> Band A 非排除试验的 risk + efficacy + 论文证据
 -> decision-synthesizer 决策核实路径
--> 地点和机制分类
--> 正式 HTML 报告
+-> 患者版 HTML；完整覆盖时另出临床审核版
 ```
 
 项目包含 5 个可独立发现的 sibling Skills：
@@ -327,7 +326,7 @@ runner 必须读取 `{input}` 并把严格 JSON 写入 `{output}`。
 ### 6.4 推荐的初始吞吐配置
 
 ```powershell
-$env:MODEL_GATER_BATCH_SIZE = "3"
+$env:MODEL_GATER_BATCH_SIZE = "8"
 $env:MODEL_DEEP_BATCH_SIZE = "2"
 $env:MODEL_GATER_CONCURRENCY = "3"
 $env:MODEL_DEEP_CONCURRENCY = "3"

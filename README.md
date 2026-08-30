@@ -28,13 +28,14 @@ npx skills add . --skill '*'
 
 ```text
 患者结构化 / Cancer Buddy 病历包
-→ 八维搜索计划
+→ 核心搜索计划（可选扩展到八维）
 → WHO MCP 数据库检索 + WHO 门户增量
-→ 统一去重、直接注册库核验、通用硬规则
-→ trial-gater
-→ 非排除试验的 risk + efficacy + 论文证据
+→ 统一去重、硬规则、A/B/C 分析优先级
+→ 覆盖目标集的直接注册库核验
+→ trial-gater（默认仅 Band A）
+→ Band A 非排除试验的 risk + efficacy + 论文证据
 → decision-synthesizer
-→ 国内/本国可及、国家记录待核实、境外报告
+→ 患者版 report.html；完整覆盖时另出临床审核版
 ```
 
 详细模块边界见 [ARCHITECTURE.md](ARCHITECTURE.md)。
@@ -65,7 +66,7 @@ Cancer Buddy 目录可以包含 `profile.json`、`patient_summary.json`、`molec
 示例见
 [matching_context.example.json](skills/clinical-trial-matching-who-mcp/examples/matching_context.example.json)。
 
-未提供 `--plan` 时，程序会从规范化患者数据生成可审计的八维基础搜索计划。
+未提供 `--plan` 时，程序会从规范化患者数据生成可审计的核心搜索计划（疾病+生物标志物、泛实体瘤、具名药物、区域注册库词）。联合靶点、通路、细胞治疗和免疫分支仅在 `matching_context.search_terms` 提供或 `SEARCH_EXPANDED_RECALL=1` 时展开。默认 `ANALYSIS_COVERAGE=patient` 只对 Band A（本国可及或正在招募的疾病/分子主命中）做完整模型分析。`--coverage full` 仍对 Band B 做 compact gater，但不做深度疗效/风险分析。
 患者可使用任意报告语言描述癌种；项目会保留原始文本用于报告和区域注册库检索，
 并在项目端确定性转换为 WHO/ClinicalTrials.gov 使用的英文疾病概念与常见同义词。
 癌种、突变/分子状态、机制、治疗类型和已收录的中文药名都会在搜索计划层转换；

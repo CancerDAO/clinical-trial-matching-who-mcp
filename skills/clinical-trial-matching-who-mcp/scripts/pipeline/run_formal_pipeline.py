@@ -16,6 +16,7 @@ from analysis_batch_manager import (
     collect_trials, combine_analysis_stages, create_deep_jobs, merge, status,
 )
 from analysis_contract import load_json, report_language
+from analysis_priority import coverage_mode
 from full_pipeline import (
     _json_sha256, _load_portal_delta, data_freshness_assessment, finalize, prepare,
 )
@@ -209,9 +210,10 @@ def _decision_input(
     deep_trials: list[dict[str, Any]],
     deep_jobs: dict[str, Any],
     source_trials: list[dict[str, Any]] | None = None,
+    deep_required_ids: list[str] | None = None,
 ) -> dict[str, Any]:
     from clinical_fact_grounding import correct_analysis_clinical_facts
-    combined = combine_analysis_stages(gating_trials, deep_trials)
+    combined = combine_analysis_stages(gating_trials, deep_trials, deep_required_ids)
     source_by_id = {
         str(trial.get("id") or ""): trial
         for trial in (
@@ -305,6 +307,9 @@ def prepare_formal(args: argparse.Namespace) -> dict[str, Any]:
             "allowlisted primary registries."
         )
     explicit_stage_models = _apply_prepare_model_args(args)
+    coverage_value = getattr(args, "coverage", None)
+    if coverage_value:
+        os.environ["ANALYSIS_COVERAGE"] = str(coverage_value)
     routing = None
     if bool(
         getattr(args, "model_preflight", False)
@@ -334,6 +339,7 @@ def prepare_formal(args: argparse.Namespace) -> dict[str, Any]:
         live_registry_verification=live_verification,
         report_language_override=getattr(args, "report_language", None),
         patient_country_override=getattr(args, "patient_country", None),
+        coverage=getattr(args, "coverage", None),
     )
     search_stats = result.get("search_stats") or {}
     portal_delta = result.get("portal_delta") or {}
@@ -362,6 +368,7 @@ def prepare_formal(args: argparse.Namespace) -> dict[str, Any]:
         "hard_excluded_count": len(result.get("hard_excluded_trials") or []),
         "deferred_audit_count": len(result.get("deferred_audit_trials") or []),
         "gater_expected_count": len(result["analysis_candidate_ids"]),
+        "coverage_mode": result.get("coverage_mode") or coverage_mode(getattr(args, "coverage", None)),
         "retrieval_audit": {
             "complete": retrieval_complete,
             "global_truncated": bool(search_stats.get("global_truncated")),
@@ -432,7 +439,7 @@ def formal_status(run_dir: Path) -> dict[str, Any]:
             state["stage"] == "formal_complete"
             and batch_status.get("stages", {}).get("gater", {}).get("complete")
             and deep_status["complete"]
-            and state.get("formal_report_ready")
+            and (state.get("patient_report_ready") or state.get("formal_report_ready"))
         )
     return result
 
@@ -506,13 +513,18 @@ def finalize_formal(run_dir: Path) -> dict[str, Any]:
         analysis_path=Path(state["analysis_bundle_path"]),
         out_dir=Path(state["final_dir"]),
     )
-    state["stage"] = "formal_complete" if result["formal_report_ready"] else "validation_failed"
+    ready = bool(result.get("patient_report_ready") or result.get("formal_report_ready"))
+    state["stage"] = "formal_complete" if ready else "validation_failed"
     state["formal_report_ready"] = result["formal_report_ready"]
+    state["patient_report_ready"] = result.get("patient_report_ready")
+    state["coverage_mode"] = result.get("coverage_mode")
     state["report_mode"] = result["report_mode"]
     state["run_manifest"] = result["run_manifest"]
     state["next_action"] = (
-        "Formal report complete."
-        if result["formal_report_ready"]
+        "Patient report complete."
+        if result.get("patient_report_ready") and not result.get("formal_report_ready")
+        else "Formal report complete."
+        if ready
         else "Inspect validation-report.html and complete the missing work; no formal report was generated."
     )
     _save_state(run_dir, state)
@@ -579,6 +591,7 @@ def _execute_formal_unlocked(
         )
         gater, _ = collect_trials(Path(state["gater_batch_dir"]), "gater-batch-*.json")
         deep, _ = collect_trials(Path(state["deep_batch_dir"]), "deep-batch-*.json")
+        gater_jobs = load_json(Path(state["gater_jobs_path"]))
         interim = run_dir / "decision-analysis-input.json"
         write_json_atomic(
             interim,
@@ -587,6 +600,7 @@ def _execute_formal_unlocked(
                 deep,
                 load_json(Path(state["deep_jobs_path"])),
                 load_json(Path(state["prepared_path"])).get("analysis_candidates") or [],
+                gater_jobs.get("deep_required_trial_ids"),
             ),
         )
         decision = run_dir / "decision_report.json"
@@ -645,7 +659,12 @@ def main() -> None:
     prepare_parser.add_argument("--total-limit", type=int, default=20000)
     prepare_parser.add_argument(
         "--batch-size", type=int,
-        default=int(os.environ.get("MODEL_GATER_BATCH_SIZE", "3")),
+        default=int(os.environ.get("MODEL_GATER_BATCH_SIZE", "8")),
+    )
+    prepare_parser.add_argument(
+        "--coverage", choices=("patient", "full"),
+        default=os.environ.get("ANALYSIS_COVERAGE", "patient"),
+        help="patient: Band A gater+deep. full: Band A+B gater, Band A deep.",
     )
     prepare_parser.add_argument("--portal-delta")
     prepare_parser.add_argument(
