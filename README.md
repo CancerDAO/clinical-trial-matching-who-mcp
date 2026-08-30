@@ -151,6 +151,20 @@ export EXTERNAL_REGISTRY_ACCESS_AUTHORIZED=1
 `RECALL_SECONDARY_GATER_LIMIT` 调整。其余候选进入审计延后集合；延后不等于不符合，
 所有召回 ID 仍出现在运行清单中。
 
+召回范围默认为全球。若产品只分析患者所在国家的试验，配置：
+
+```bash
+export TRIAL_RECALL_SCOPE=patient_country
+export TRIAL_RECALL_DEFAULT_COUNTRY=China
+```
+
+Prepare 不调用模型生成搜索计划；它会确定性地把“中华人民共和国”“中国大陆”、
+`PR China` 等患者国家写法映射为 MCP 的 `China`，并使用 MCP 的结构化 `country`
+参数过滤具名中心或国家记录。患者未提供国家时才使用配置的默认国家。未来外部模型
+计划可提供 `mcp_country` 候选，但不能覆盖患者明确填写的当前国家。WHO Portal 增量
+在进入核验和模型分析前应用相同国家过滤。若入口固定为某一国家，可使用
+`TRIAL_RECALL_SCOPE=fixed_country` 和 `TRIAL_RECALL_COUNTRY=China`。
+
 ### 2. Execute
 
 `execute` 确定性地连续完成全部 gater、论文预取、deep、decision、merge 和 finalize，

@@ -168,6 +168,15 @@ coverage, and finalize before a validated merged bundle.
 
 A positive analysis-limit or prefilter-limit is validation-only. Both default to zero. Formal staged runs require every recalled trial to receive exactly one auditable disposition: deterministic hard exclusion, immediate model Gater, or deferred audit. Registry text, not retrieval-query provenance, determines relevance tiers. By default all primary candidates and at most `RECALL_SECONDARY_GATER_LIMIT=50` ranked secondary candidates receive immediate Gater analysis; remaining secondary candidates are deferred, not declared ineligible. Every Gater `match` or `conditional` verdict must receive validated risk, efficacy and development-evidence output.
 
+Formal Prepare builds its baseline search plan deterministically and does not spend a model
+call on country normalization. `TRIAL_RECALL_SCOPE=global` preserves global recall. With
+`patient_country`, localized patient-country values are mapped to the MCP canonical English
+country and passed through the structured `country` argument; a missing country uses
+`TRIAL_RECALL_DEFAULT_COUNTRY` (default `China`). An optional plan `mcp_country` is only a
+fallback candidate and never overrides an explicit patient country. `fixed_country` uses
+`TRIAL_RECALL_COUNTRY`. Portal-delta rows are filtered by the same structured country evidence
+before downstream verification and model analysis.
+
 Finalize uses one blocking gate and local warnings. It emits only
 `validation-report.html` when validated analysis integrity is incomplete.
 `formal_report_ready` depends on gate 1; gates 2 and 3 are visible warnings:

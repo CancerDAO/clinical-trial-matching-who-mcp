@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 from unittest import mock
 from pathlib import Path
 
@@ -366,6 +368,21 @@ class WhoMcpPipelineTests(unittest.TestCase):
         )
         self.assertEqual(request["local_search"]["arguments"]["country"], "")
         self.assertEqual(request["metadata"]["tool"], "database_metadata")
+
+    def test_request_routes_china_patient_to_structured_country_filter(self):
+        with patch.dict(os.environ, {
+            "TRIAL_RECALL_SCOPE": "patient_country",
+            "TRIAL_RECALL_DEFAULT_COUNTRY": "China",
+        }, clear=False):
+            request = build_mcp_requests(self.plan, {
+                **self.patient, "country": "中国大陆",
+            })
+        self.assertEqual(
+            request["local_search"]["arguments"]["country"], "China"
+        )
+        self.assertEqual(
+            request["country_routing"]["mapping_source"], "patient_country"
+        )
 
 
     def test_original_example_covers_all_eight_recall_dimensions(self):

@@ -227,7 +227,9 @@ using exactly one of these values:
 8. chinese_registry_terms — Chinese registry terms, including single-token alternatives.
 Each group must contain a label and queries with condition and term. Include treatment_lines
 and hard_exclude.first_line_only plus explicit molecular mismatch rules. Do not filter by country;
-country is applied later for domestic/international reporting.
+country is applied later by deterministic routing. Also return `mcp_country` as the canonical
+English current-country name when it is explicit in the patient data. This is only a candidate;
+the pipeline validates it and never lets it override an explicit patient country.
 
 Patient:
 {patient_text}
@@ -349,6 +351,7 @@ def build_baseline_search_plan(patient: dict[str, Any]) -> dict[str, Any]:
         "schema_version": "clinical-search-plan-v1",
         "patient_id": patient.get("patient_id"),
         "patient_summary": "Deterministic baseline generated from normalized patient facts.",
+        "mcp_country": str(patient.get("current_country") or patient.get("country") or "").strip(),
         "treatment_lines": patient.get("treatment_lines_completed"),
         "disease_stage_filter": stage,
         "keyword_groups": groups,
