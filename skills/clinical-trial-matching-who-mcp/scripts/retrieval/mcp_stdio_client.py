@@ -133,6 +133,7 @@ class JsonRpcMcpClient:
 def run_who_workflow(
     *, server_python: str, server_script: Path, database: Path,
     search_plan: dict[str, Any], max_per_query: int, total_limit: int,
+    country: str = "",
 ) -> dict[str, Any]:
     client = JsonRpcMcpClient(
         server_python,
@@ -151,6 +152,7 @@ def run_who_workflow(
             transport_name="stdio_mcp_jsonrpc",
             client_version="3.2",
             search_plan=search_plan,
+            country=country,
             max_per_query=max_per_query,
             total_limit=total_limit,
         )

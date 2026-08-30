@@ -241,9 +241,16 @@ def render_html(p: dict[str, Any], path: Path) -> None:
   item_word=T(chr(39033),"items")
   sections.append(f"""<section class="mechanism-group"><div class="banner {banner_style[category]}"><div class="num">{section_index:02d}</div><div class="bmeta"><div class="beyebrow">Treatment mechanism</div><div class="btitle">{esc(m['label_zh' if zh else 'label_en'])}</div></div><div class="cnt" data-item-word="{esc(item_word)}">{len(items)} {item_word}</div></div><div class="tier-desc">{esc(category_desc[category])}</div>{''.join(cards)}</section>""")
  c=p["counts"]; delta=p.get("portal_delta") or {}; geo=p.get("geography_audit") or {}
- title=T("\u4e3a\u60a8\u7b5b\u9009\u7684\u5168\u7403\u4e34\u5e8a\u8bd5\u9a8c","Global clinical trials selected for you")
+ country_routing=p.get("country_routing") or {}
+ recall_country=str(country_routing.get("mcp_country") or "").strip()
+ if country_routing.get("scope") in {"patient_country","fixed_country"} and recall_country:
+  title=(f"为您筛选的{recall_country}相关临床试验" if zh else f"{recall_country}-scope clinical trials selected for you")
+ else:
+  title=T("\u4e3a\u60a8\u7b5b\u9009\u7684\u5168\u7403\u4e34\u5e8a\u8bd5\u9a8c","Global clinical trials selected for you")
  validation_notice="" if p.get("formal_report_ready") else T("\u9a8c\u8bc1\u62a5\u544a\uff1a\u672a\u901a\u8fc7\u5168\u91cf\u5206\u6790\u3001\u5b8c\u6574\u68c0\u7d22\u6216\u95e8\u6237\u589e\u91cf\u8d28\u91cf\u95e8\uff0c\u4e0d\u5f97\u4f5c\u4e3a\u5b8c\u6574\u60a3\u8005\u62a5\u544a\u3002","Validation report: full-analysis, complete-retrieval, or current portal-delta quality gates are not all satisfied; this is not a complete patient report.")
  disclaimer=T("\u672c\u62a5\u544a\u7528\u4e8e\u4fe1\u606f\u5339\u914d\u548c\u9884\u7b5b\uff0c\u4e0d\u6784\u6210\u533b\u5b66\u5efa\u8bae\u6216\u5165\u7ec4\u7ed3\u8bba\u3002\u6240\u6709\u4e2d\u5fc3\u3001\u540d\u989d\u548c\u5165\u6392\u6761\u4ef6\u987b\u7531\u7814\u7a76\u4e2d\u5fc3\u786e\u8ba4\u3002","This report supports matching and pre-screening only. It is not medical advice or an enrollment decision. Sites, slots and eligibility require study-centre confirmation.")
+ if recall_country:
+  disclaimer += T(f" 本次召回已限定为登记地点或国家记录包含 {recall_country} 的试验；本国注册记录本身不等同于存在开放中心。",f" Recall was limited to trials with structured site or country evidence for {recall_country}; national registration alone does not prove an open site.")
  if not p.get("formal_report_ready"):
   validation_notice=T("验证报告：分析覆盖或结构完整性未通过，不生成患者试验卡片。","Validation report: analysis coverage or structural integrity failed; patient trial cards were not generated.")
  report_warning_messages=[]

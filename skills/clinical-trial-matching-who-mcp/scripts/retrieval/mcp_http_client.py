@@ -156,7 +156,7 @@ class JsonRpcHttpMcpClient:
 
 def run_remote_who_workflow(
     *, url: str, api_key: str, search_plan: dict[str, Any],
-    max_per_query: int, total_limit: int,
+    max_per_query: int, total_limit: int, country: str = "",
 ) -> dict[str, Any]:
     client = JsonRpcHttpMcpClient(url, api_key)
 
@@ -179,6 +179,7 @@ def run_remote_who_workflow(
         transport_name="streamable_http_mcp_jsonrpc",
         client_version="3.2",
         search_plan=search_plan,
+        country=country,
         max_per_query=max_per_query,
         total_limit=total_limit,
         detail_loader=load_details,

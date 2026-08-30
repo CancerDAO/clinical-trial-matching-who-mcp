@@ -145,9 +145,25 @@ export EXTERNAL_REGISTRY_ACCESS_AUTHORIZED=1
 48 小时重叠窗口补充新登记记录，并明确区分“完整执行但零新增”和可疑零结果。它仍
 不能把登记日期等同于最后更新时间，因此原始注册库实时核验继续承担状态更新检查。
 
-正式 Prepare 在召回与 Gater 之间执行确定性锚点分层：疾病/分子直接匹配进入主
-Gater，篮子试验等部分匹配进入次级 Gater，状态未知且缺少患者特异锚点的记录进入
-审计延后集合。延后不等于不符合，所有召回 ID 仍出现在运行清单中。
+正式 Prepare 在召回与 Gater 之间执行确定性锚点分层。只有注册库正文中的疾病和
+分子证据决定层级；`matched_queries` 仅作为召回来源审计，国家中心和多分支命中也
+不会替代临床相关性。默认分析全部主层候选及排序最靠前的 50 个次级候选，可通过
+`RECALL_SECONDARY_GATER_LIMIT` 调整。其余候选进入审计延后集合；延后不等于不符合，
+所有召回 ID 仍出现在运行清单中。
+
+召回范围默认为全球。若产品只分析患者所在国家的试验，配置：
+
+```bash
+export TRIAL_RECALL_SCOPE=patient_country
+export TRIAL_RECALL_DEFAULT_COUNTRY=China
+```
+
+Prepare 不调用模型生成搜索计划；它会确定性地把“中华人民共和国”“中国大陆”、
+`PR China` 等患者国家写法映射为 MCP 的 `China`，并使用 MCP 的结构化 `country`
+参数过滤具名中心或国家记录。患者未提供国家时才使用配置的默认国家。未来外部模型
+计划可提供 `mcp_country` 候选，但不能覆盖患者明确填写的当前国家。WHO Portal 增量
+在进入核验和模型分析前应用相同国家过滤。若入口固定为某一国家，可使用
+`TRIAL_RECALL_SCOPE=fixed_country` 和 `TRIAL_RECALL_COUNTRY=China`。
 
 ### 2. Execute
 

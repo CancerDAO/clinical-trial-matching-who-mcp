@@ -51,6 +51,7 @@ from search_plan import (
 )
 from who_mcp_adapter import merge_sources
 from who_portal_delta import build_delta
+from country_scope import filter_trials_for_country, resolve_recall_country
 from direct_registry_verifier import verify_and_partition
 from who_mcp_verifier import verify_batch
 
@@ -78,6 +79,17 @@ def _portal_clock_skew_minutes() -> float:
         raise ValueError("WHO_PORTAL_CLOCK_SKEW_MINUTES must be numeric") from exc
     if value < 0 or value > 60:
         raise ValueError("WHO_PORTAL_CLOCK_SKEW_MINUTES must be between 0 and 60")
+    return value
+
+
+def _secondary_gater_limit() -> int:
+    raw = os.environ.get("RECALL_SECONDARY_GATER_LIMIT", "50")
+    try:
+        value = int(raw)
+    except ValueError as exc:
+        raise ValueError("RECALL_SECONDARY_GATER_LIMIT must be an integer") from exc
+    if value < 0:
+        raise ValueError("RECALL_SECONDARY_GATER_LIMIT must be zero or greater")
     return value
 
 
@@ -499,6 +511,10 @@ def prepare(
     errors.extend(validate_search_plan_for_patient(plan, patient))
     if errors:
         raise ValueError("Invalid full search plan: " + "; ".join(errors))
+    country_routing = resolve_recall_country(
+        patient, plan_country=plan.get("mcp_country")
+    )
+    recall_country = country_routing["mcp_country"]
     transport = mcp_transport.strip().casefold()
     if transport == "stdio":
         if not (database and server_python and server_script):
@@ -508,6 +524,7 @@ def prepare(
             server_script=server_script,
             database=database,
             search_plan=plan,
+            country=recall_country,
             max_per_query=max_per_query,
             total_limit=total_limit,
         )
@@ -518,6 +535,7 @@ def prepare(
             url=mcp_url,
             api_key=mcp_api_key,
             search_plan=plan,
+            country=recall_country,
             max_per_query=max_per_query,
             total_limit=total_limit,
         )
@@ -553,6 +571,13 @@ def prepare(
         portal_trials, portal_audit = _load_portal_delta(None, database_as_of)
     else:
         raise ValueError("portal_delta_mode must be auto, file, or off")
+    portal_raw_count = len(portal_trials)
+    portal_trials, portal_country_filter = filter_trials_for_country(
+        portal_trials, recall_country
+    )
+    portal_audit["raw_returned_before_country_filter"] = portal_raw_count
+    portal_audit["returned"] = len(portal_trials)
+    portal_audit["country_filter"] = portal_country_filter
     merged = merge_sources(
         search.get("results") or [], portal_trials, patient=patient, database_as_of=database_as_of,
     )
@@ -621,14 +646,36 @@ def prepare(
     recall_triage = stratify_recall_candidates(patient, gater_pool)
     gater_primary = sorted(recall_triage["gater_primary"], key=_candidate_rank)
     gater_secondary = sorted(recall_triage["gater_secondary"], key=_candidate_rank)
-    deferred_audit = sorted(recall_triage["deferred_audit"], key=_candidate_rank)
-    model_workload = gater_primary + gater_secondary
+    secondary_limit = _secondary_gater_limit()
+    selected_secondary = gater_secondary[:secondary_limit]
+    deferred_secondary = gater_secondary[secondary_limit:]
+    for trial in deferred_secondary:
+        trial["recall_triage"]["execution_disposition"] = "deferred_secondary_limit"
+    deferred_audit = sorted(
+        recall_triage["deferred_audit"] + deferred_secondary,
+        key=_candidate_rank,
+    )
+    model_workload = gater_primary + selected_secondary
     prefiltered, prefilter_audit = deterministic_prefilter(model_workload, prefilter_limit)
     prefilter_audit.update({
         "version": "deterministic-recall-triage-v2",
         "deferred_audit_count": len(deferred_audit),
+        "secondary_gater_limit": secondary_limit,
+        "secondary_gater_selected_count": len(selected_secondary),
+        "secondary_gater_deferred_count": len(deferred_secondary),
         "budget_omitted_count": 0,
         "recall_triage": recall_triage["audit"],
+        "secondary_gater_policy": {
+            "limit": secondary_limit,
+            "available_count": len(gater_secondary),
+            "selected_count": len(selected_secondary),
+            "deferred_count": len(deferred_secondary),
+            "policy": (
+                "Primary candidates and at most the configured number of ranked "
+                "secondary candidates receive immediate model Gater analysis. "
+                "Remaining secondary candidates retain an auditable deferred disposition."
+            ),
+        },
     })
     candidates = select_analysis_candidates(prefiltered, analysis_limit)
     query_audit = search.get("query_audit") or []
@@ -655,6 +702,7 @@ def prepare(
         "server_tools": mcp_payload["server_tools"],
         "patient": patient,
         "patient_input_audit": patient_input_audit,
+        "country_routing": country_routing,
         "search_plan": plan,
         "executed_search_plan": mcp_payload.get("executed_search_plan") or plan,
         "search_plan_audit": plan.get("generation_audit") or {
@@ -707,9 +755,13 @@ def prepare(
         "schema_version": "recall-funnel-audit-v1",
         "created_at": payload["created_at"],
         "recall_count": len(verified),
+        "country_routing": country_routing,
+        "portal_country_filter": portal_country_filter,
         "hard_excluded_ids": sorted(_trial_ids(hard_excluded)),
         "gater_primary_ids": sorted(_trial_ids(gater_primary)),
         "gater_secondary_ids": sorted(_trial_ids(gater_secondary)),
+        "gater_secondary_selected_ids": sorted(_trial_ids(selected_secondary)),
+        "gater_secondary_deferred_ids": sorted(_trial_ids(deferred_secondary)),
         "deferred_audit_ids": sorted(_trial_ids(deferred_audit)),
         "triage": recall_triage["audit"],
         "portal_delta_zero_result_assessment": portal_audit.get(
@@ -844,6 +896,7 @@ def finalize(*, prepared_path: Path, analysis_path: Path, out_dir: Path) -> dict
             "original_decision_synthesizer", "mechanism_classification", "patient_report",
         ],
         "patient": patient,
+        "country_routing": prepared.get("country_routing") or {},
         "language": language,
         "database_metadata": prepared["database_metadata"],
         "database_as_of": prepared["database_as_of"],

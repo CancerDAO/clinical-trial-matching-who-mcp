@@ -29,6 +29,7 @@ def execute_who_workflow(
     transport_name: str,
     client_version: str,
     search_plan: dict[str, Any],
+    country: str,
     max_per_query: int,
     total_limit: int,
     detail_loader: DetailLoader | None = None,
@@ -57,7 +58,7 @@ def execute_who_workflow(
     executed_search_plan = compile_search_plan_for_mcp(search_plan)
     search_arguments = {
         "search_plan": executed_search_plan,
-        "country": "",
+        "country": country,
         "max_per_query": max_per_query,
         "total_limit": total_limit,
     }
@@ -111,4 +112,5 @@ def execute_who_workflow(
         "search": search,
         "details": details,
         "executed_search_plan": executed_search_plan,
+        "search_country": country,
     }

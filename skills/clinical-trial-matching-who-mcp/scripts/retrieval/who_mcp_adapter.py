@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from search_plan import compile_search_plan_for_mcp
+from country_scope import resolve_recall_country
 
 def _text(value: Any) -> str:
     return "" if value is None else str(value).strip()
@@ -136,17 +137,22 @@ def normalize_trial(
 def build_mcp_requests(search_plan: dict[str, Any], patient: dict[str, Any], max_per_query: int = 20) -> dict[str, Any]:
     """Return the MCP calls the orchestrating agent must make."""
     executed_search_plan = compile_search_plan_for_mcp(search_plan)
+    country_routing = resolve_recall_country(
+        patient, plan_country=search_plan.get("mcp_country")
+    )
     return {
         "metadata": {"tool": "database_metadata", "arguments": {}},
         "local_search": {
             "tool": "execute_search_plan",
             "arguments": {
-                "search_plan": executed_search_plan, "country": "",
+                "search_plan": executed_search_plan,
+                "country": country_routing["mcp_country"],
                 "max_per_query": max_per_query, "total_limit": 400,
             },
         },
         "detail_policy": {"tool": "get_trial", "argument": "registry_id", "required_for": "all trials retained for gating"},
         "patient_country": _text(patient.get("country")),
+        "country_routing": country_routing,
     }
 
 

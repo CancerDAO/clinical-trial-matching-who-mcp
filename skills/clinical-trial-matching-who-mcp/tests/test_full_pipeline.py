@@ -65,6 +65,16 @@ def valid_analysis(trial_id: str, cancer: str) -> dict:
 
 
 class GenericPipelineContractTests(unittest.TestCase):
+    def test_secondary_gater_limit_is_configurable_and_nonnegative(self):
+        with mock.patch.dict(os.environ, {"RECALL_SECONDARY_GATER_LIMIT": "12"}):
+            self.assertEqual(pipeline._secondary_gater_limit(), 12)
+        with mock.patch.dict(os.environ, {"RECALL_SECONDARY_GATER_LIMIT": "-1"}):
+            with self.assertRaises(ValueError):
+                pipeline._secondary_gater_limit()
+        with mock.patch.dict(os.environ, {"RECALL_SECONDARY_GATER_LIMIT": "invalid"}):
+            with self.assertRaises(ValueError):
+                pipeline._secondary_gater_limit()
+
     def test_coverage_accepts_deferred_audit_as_explicit_disposition(self):
         prepared = {
             "all_verified_trials": [{"id": "H"}, {"id": "G"}, {"id": "D"}],
