@@ -38,6 +38,12 @@ from io_utils import write_json_atomic
 from patient_input import load_patient_input
 from generic_hard_rules import apply_generic_hard_rules
 from recall_triage import stratify_recall_candidates
+from analysis_priority import (
+    annotate_analysis_priority,
+    coverage_mode,
+    patient_priority_rows,
+    promote_empty_band_a,
+)
 from feasibility import WEIGHTS, compute_feasibility
 from html_renderer import render_html, render_validation_html
 from report_translation import concise_patient_text, maybe_translate_report
@@ -232,7 +238,12 @@ def _database_snapshot_is_current(prepared: dict[str, Any]) -> bool:
         return False
     age = (dt.datetime.now().astimezone() - watermark.astimezone()).total_seconds() / 3600
     live = prepared.get("live_registry_audit") or {}
-    expected = len(prepared.get("all_verified_trials") or [])
+    target_ids = prepared.get("live_registry_target_ids")
+    expected = (
+        len(target_ids)
+        if isinstance(target_ids, list)
+        else len(prepared.get("all_verified_trials") or [])
+    )
     attempted = int(live.get("attempted") or 0)
     errors = int(live.get("errors") or 0)
     unknown = int(live.get("unknown") or 0)
@@ -255,7 +266,13 @@ def data_freshness_assessment(prepared: dict[str, Any]) -> dict[str, Any]:
     portal_current = _portal_audit_is_current(prepared.get("portal_delta") or {})
     snapshot_current = _database_snapshot_is_current(prepared)
     live = prepared.get("live_registry_audit") or {}
-    expected = len(prepared.get("all_verified_trials") or [])
+    target_ids = prepared.get("live_registry_target_ids")
+    expected = (
+        len(target_ids)
+        if isinstance(target_ids, list)
+        else len(prepared.get("all_verified_trials") or [])
+    )
+    whole_recall_count = len(prepared.get("all_verified_trials") or [])
     attempted = int(live.get("attempted") or 0)
     errors = int(live.get("errors") or 0)
     unknown = int(live.get("unknown") or 0)
@@ -273,14 +290,14 @@ def data_freshness_assessment(prepared: dict[str, Any]) -> dict[str, Any]:
     if portal_current and live_complete:
         level = "A"
         rationale = (
-            "Current WHO portal delta was merged and every recalled trial received "
-            "a direct-registry verification attempt."
+            "Current WHO portal delta was merged and every patient-priority trial "
+            "received a direct-registry verification attempt."
         )
     elif snapshot_current and live_complete:
         level = "B"
         rationale = (
-            "MCP database is within the configured age and every recalled trial "
-            "received a direct-registry verification attempt."
+            "MCP database is within the configured age and every patient-priority "
+            "trial received a direct-registry verification attempt."
         )
     else:
         level = "C"
@@ -300,6 +317,9 @@ def data_freshness_assessment(prepared: dict[str, Any]) -> dict[str, Any]:
         "live_registry_complete": live_complete,
         "live_registry_error_rate": error_rate,
         "live_registry_max_error_rate": max_error_rate,
+        "live_registry_target_count": expected,
+        "whole_recall_count": whole_recall_count,
+        "whole_recall_live_verified": expected == whole_recall_count,
         "live_registry_audit": live,
         "rationale": rationale,
     }
@@ -495,8 +515,10 @@ def prepare(
     portal_delta_mode: str = "off", live_registry_verification: bool = False,
     report_language_override: str | None = None,
     patient_country_override: str | None = None,
+    coverage: str | None = None,
 ) -> dict[str, Any]:
     patient, patient_input_audit = load_patient_input(patient_path)
+    mode = coverage_mode(coverage)
     if patient_country_override:
         patient["country"] = str(patient_country_override).strip()
         patient_input_audit["patient_country_override"] = patient["country"]
@@ -601,37 +623,63 @@ def prepare(
         ),
     }
     for trial in verified:
-        trial["resolved_source_url"] = resolved_trial_url(trial)
-    if live_registry_verification:
-        live = verify_and_partition(
-            verified,
-            workers=int(os.environ.get("LIVE_REGISTRY_CONCURRENCY", "8")),
-            timeout=float(os.environ.get("LIVE_REGISTRY_TIMEOUT_SECONDS", "20")),
-            patient=patient,
-        )
-        verified = live["active_or_unknown"] + live["inactive"]
-        live_inactive_ids = {
-            str(trial.get("id") or "") for trial in live["inactive"]
-        }
-        live_audit = live["audit"]
-    else:
-        live_inactive_ids = set()
-        live_audit = {
-            "attempted": 0, "active": 0, "inactive": 0, "unknown": 0,
-            "errors": 0, "complete": False, "policy": "Not executed",
-        }
-    for trial in verified:
         trial["feasibility"] = compute_feasibility(trial, patient).__dict__
         trial["mechanism_category"] = classify_mechanism(trial, patient=patient)
         trial["country_assessment"] = assess_country_evidence(trial, patient)
         trial["resolved_source_url"] = resolved_trial_url(trial)
     triage = apply_generic_hard_rules(patient, verified)
+    generic_hard_excluded = list(triage["hard_exclude"])
+    initial_gater_pool = list(triage["pass_to_gater"])
+    recall_triage = stratify_recall_candidates(patient, initial_gater_pool)
+    prioritized = annotate_analysis_priority(
+        list(recall_triage["gater_primary"])
+        + list(recall_triage["gater_secondary"])
+        + list(recall_triage["deferred_audit"])
+    )
+    prioritized = promote_empty_band_a(prioritized)
+    live_input = prioritized if mode == "full" else patient_priority_rows(prioritized)
+    live_target_ids = {
+        str(trial.get("id") or "") for trial in live_input if str(trial.get("id") or "")
+    }
+    if live_registry_verification:
+        live = verify_and_partition(
+            live_input,
+            workers=int(os.environ.get("LIVE_REGISTRY_CONCURRENCY", "8")),
+            timeout=float(os.environ.get("LIVE_REGISTRY_TIMEOUT_SECONDS", "20")),
+            patient=patient,
+        )
+        live_by_id = {
+            str(trial.get("id") or ""): trial
+            for trial in live["active_or_unknown"] + live["inactive"]
+        }
+        prioritized = [
+            live_by_id.get(str(trial.get("id") or ""), trial)
+            for trial in prioritized
+        ]
+        verified = [
+            live_by_id.get(str(trial.get("id") or ""), trial)
+            for trial in verified
+        ]
+        live_inactive_ids = {
+            str(trial.get("id") or "") for trial in live["inactive"]
+        }
+        live_audit = {
+            **live["audit"],
+            "scope": "all_hard_rule_pass" if mode == "full" else "patient_priority_band_a",
+            "target_count": len(live_target_ids),
+            "deferred_unverified_count": len(prioritized) - len(live_target_ids),
+        }
+    else:
+        live_inactive_ids = set()
+        live_audit = {
+            "attempted": 0, "active": 0, "inactive": 0, "unknown": 0,
+            "errors": 0, "complete": False, "policy": "Not executed",
+            "scope": "not_executed", "target_count": 0,
+            "deferred_unverified_count": len(prioritized),
+        }
     registry_inactive = []
-    generic_hard_excluded = []
-    for trial in triage["hard_exclude"]:
-        generic_hard_excluded.append(trial)
     gater_pool = []
-    for trial in triage["pass_to_gater"]:
+    for trial in prioritized:
         if str(trial.get("id") or "") in live_inactive_ids:
             trial["hard_excluded"] = True
             trial["exclude_reason"] = "Direct registry explicitly reports a non-enrolling status."
@@ -643,28 +691,63 @@ def prepare(
         else:
             gater_pool.append(trial)
     hard_excluded = generic_hard_excluded + registry_inactive
-    recall_triage = stratify_recall_candidates(patient, gater_pool)
-    gater_primary = sorted(recall_triage["gater_primary"], key=_candidate_rank)
-    gater_secondary = sorted(recall_triage["gater_secondary"], key=_candidate_rank)
-    secondary_limit = _secondary_gater_limit()
-    selected_secondary = gater_secondary[:secondary_limit]
-    deferred_secondary = gater_secondary[secondary_limit:]
-    for trial in deferred_secondary:
-        trial["recall_triage"]["execution_disposition"] = "deferred_secondary_limit"
-    deferred_audit = sorted(
-        recall_triage["deferred_audit"] + deferred_secondary,
-        key=_candidate_rank,
-    )
-    model_workload = gater_primary + selected_secondary
+    if mode == "patient":
+        model_workload = sorted(patient_priority_rows(gater_pool), key=_candidate_rank)
+        model_ids = _trial_ids(model_workload)
+        deferred_audit = sorted(
+            [trial for trial in gater_pool if str(trial.get("id") or "") not in model_ids],
+            key=_candidate_rank,
+        )
+        gater_primary = model_workload
+        gater_secondary = []
+        selected_secondary = []
+        deferred_secondary = deferred_audit
+        secondary_limit = 0
+    else:
+        gater_primary = sorted(
+            [trial for trial in gater_pool if (trial.get("recall_triage") or {}).get("tier") == "gater_primary"],
+            key=_candidate_rank,
+        )
+        gater_secondary = sorted(
+            [trial for trial in gater_pool if (trial.get("recall_triage") or {}).get("tier") == "gater_secondary"],
+            key=_candidate_rank,
+        )
+        secondary_limit = _secondary_gater_limit()
+        selected_secondary = gater_secondary[:secondary_limit]
+        deferred_secondary = gater_secondary[secondary_limit:]
+        for trial in deferred_secondary:
+            trial["recall_triage"]["execution_disposition"] = "deferred_secondary_limit"
+        deferred_audit = sorted(
+            [trial for trial in gater_pool if (trial.get("recall_triage") or {}).get("tier") == "deferred_audit"]
+            + deferred_secondary,
+            key=_candidate_rank,
+        )
+        model_workload = gater_primary + selected_secondary
     prefiltered, prefilter_audit = deterministic_prefilter(model_workload, prefilter_limit)
     prefilter_audit.update({
         "version": "deterministic-recall-triage-v2",
+        "coverage_mode": mode,
         "deferred_audit_count": len(deferred_audit),
         "secondary_gater_limit": secondary_limit,
         "secondary_gater_selected_count": len(selected_secondary),
         "secondary_gater_deferred_count": len(deferred_secondary),
         "budget_omitted_count": 0,
         "recall_triage": recall_triage["audit"],
+        "analysis_priority": {
+            "band_a_count": len(patient_priority_rows(gater_pool)),
+            "band_b_count": sum(
+                (trial.get("analysis_priority") or {}).get("band") == "B"
+                for trial in gater_pool
+            ),
+            "band_c_count": sum(
+                (trial.get("analysis_priority") or {}).get("band") == "C"
+                for trial in gater_pool
+            ),
+            "promoted_ids": sorted(
+                str(trial.get("id") or "") for trial in gater_pool
+                if (trial.get("analysis_priority") or {}).get("promoted")
+            ),
+        },
         "secondary_gater_policy": {
             "limit": secondary_limit,
             "available_count": len(gater_secondary),
@@ -717,8 +800,10 @@ def prepare(
         "deduplication_audit": deduplication_audit,
         "portal_delta": portal_audit,
         "live_registry_audit": live_audit,
+        "live_registry_target_ids": sorted(live_target_ids) if live_registry_verification else [],
         "all_verified_trials": verified,
         "analysis_workflow": "gater_then_deep_analysis",
+        "coverage_mode": mode,
         "hard_rule_triage": {
             "ruleset_version": triage["ruleset_version"],
             "input_count": len(verified),
@@ -763,6 +848,10 @@ def prepare(
         "gater_secondary_selected_ids": sorted(_trial_ids(selected_secondary)),
         "gater_secondary_deferred_ids": sorted(_trial_ids(deferred_secondary)),
         "deferred_audit_ids": sorted(_trial_ids(deferred_audit)),
+        "coverage_mode": mode,
+        "live_registry_scope": live_audit.get("scope"),
+        "live_registry_target_ids": sorted(live_target_ids),
+        "analysis_priority": prefilter_audit["analysis_priority"],
         "triage": recall_triage["audit"],
         "portal_delta_zero_result_assessment": portal_audit.get(
             "zero_result_assessment"
@@ -849,6 +938,12 @@ def finalize(*, prepared_path: Path, analysis_path: Path, out_dir: Path) -> dict
             "code": "DATA_SNAPSHOT_STALE",
             "message_zh": "数据快照未达到当前新鲜度目标；招募状态和中心信息须在联系研究中心前重新核实。",
             "message_en": "The data snapshot does not meet the current freshness target; recruitment status and sites require re-verification before contact.",
+        })
+    elif not (prepared.get("data_freshness") or {}).get("whole_recall_live_verified"):
+        report_warnings.append({
+            "code": "PRIORITY_SCOPED_LIVE_VERIFICATION",
+            "message_zh": "仅对患者优先候选完成了实时注册库核验；其余召回结果保留为审计记录，未进入本次推荐。",
+            "message_en": "Live registry verification covered patient-priority candidates only; other recalled records remain auditable and were not considered for recommendation.",
         })
     run_manifest = {
         "schema_version": "formal-run-manifest-v1",
