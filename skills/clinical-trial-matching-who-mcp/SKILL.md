@@ -184,11 +184,20 @@ Finalize uses one blocking gate and local warnings. It emits only
 1. every recalled trial has a hard-rule or gater disposition, every non-excluded trial has complete deep analysis, and there are no budget omissions;
 2. retrieval truncation warns that the report covers analyzed recall only;
 3. freshness below level A/B warns that recruitment status and sites require
-   re-verification. Level A has a current WHO portal delta and a
-   complete direct-registry audit; level B permits a database snapshot within
-   `WHO_MCP_DATABASE_MAX_AGE_HOURS` and still requires the complete direct-registry
-   audit. A portal delta never substitutes for recruitment-status verification.
+   re-verification. Level A has a current WHO portal delta and a complete audit
+   for the configured live-registry target set; level B permits a database snapshot
+   within `WHO_MCP_DATABASE_MAX_AGE_HOURS` and requires the same target-set audit.
+   Patient mode explicitly reports that deferred recall was not live-verified.
+   A portal delta never substitutes for recruitment-status verification.
 
 The clinical analysis language is not a gate. Chinese delivery is produced by
 translating the grounded English patient-facing report while preserving trial
 IDs, drug names, biomarkers, numbers, citations and URLs.
+After country-scoped recall and deterministic hard rules, `ANALYSIS_COVERAGE=patient`
+assigns an auditable priority band and sends only strong, actionable Band A candidates
+to live-registry verification and model analysis. Other recalled rows remain in the
+deferred audit set and are not treated as eligibility exclusions. If no Band A row
+exists, up to `PATIENT_PRIORITY_FALLBACK_LIMIT` ranked Band B rows are promoted.
+Use `ANALYSIS_COVERAGE=full` for the historical primary plus bounded-secondary audit
+workload. The default Gater batch size is 5 and remains configurable through
+`MODEL_GATER_BATCH_SIZE`.

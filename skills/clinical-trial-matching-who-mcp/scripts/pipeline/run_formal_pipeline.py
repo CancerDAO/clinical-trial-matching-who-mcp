@@ -334,6 +334,7 @@ def prepare_formal(args: argparse.Namespace) -> dict[str, Any]:
         live_registry_verification=live_verification,
         report_language_override=getattr(args, "report_language", None),
         patient_country_override=getattr(args, "patient_country", None),
+        coverage=getattr(args, "coverage", None),
     )
     search_stats = result.get("search_stats") or {}
     portal_delta = result.get("portal_delta") or {}
@@ -361,6 +362,7 @@ def prepare_formal(args: argparse.Namespace) -> dict[str, Any]:
         "recall_count": len(result["all_verified_trials"]),
         "hard_excluded_count": len(result.get("hard_excluded_trials") or []),
         "deferred_audit_count": len(result.get("deferred_audit_trials") or []),
+        "coverage_mode": result.get("coverage_mode", "full"),
         "gater_expected_count": len(result["analysis_candidate_ids"]),
         "retrieval_audit": {
             "complete": retrieval_complete,
@@ -371,6 +373,11 @@ def prepare_formal(args: argparse.Namespace) -> dict[str, Any]:
             "portal_delta_status": str(portal_delta.get("status") or "not_executed"),
             "portal_delta_trial_count": int(portal_delta.get("returned") or 0),
             "live_registry_attempted": int(live_registry.get("attempted") or 0),
+            "live_registry_scope": str(live_registry.get("scope") or "unknown"),
+            "live_registry_target_count": int(live_registry.get("target_count") or 0),
+            "live_registry_deferred_unverified_count": int(
+                live_registry.get("deferred_unverified_count") or 0
+            ),
             "live_registry_reachable": int(live_registry.get("reachable") or 0),
             "live_registry_active": int(live_registry.get("active") or 0),
             "live_registry_inactive": int(live_registry.get("inactive") or 0),
@@ -645,7 +652,15 @@ def main() -> None:
     prepare_parser.add_argument("--total-limit", type=int, default=20000)
     prepare_parser.add_argument(
         "--batch-size", type=int,
-        default=int(os.environ.get("MODEL_GATER_BATCH_SIZE", "3")),
+        default=int(os.environ.get("MODEL_GATER_BATCH_SIZE", "5")),
+    )
+    prepare_parser.add_argument(
+        "--coverage", choices=("patient", "full"),
+        default=os.environ.get("ANALYSIS_COVERAGE", "patient"),
+        help=(
+            "patient analyzes only deterministic priority candidates; full preserves "
+            "the historical primary and bounded-secondary model workload"
+        ),
     )
     prepare_parser.add_argument("--portal-delta")
     prepare_parser.add_argument(
