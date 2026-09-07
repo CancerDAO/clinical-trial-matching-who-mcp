@@ -14,6 +14,8 @@ from analysis_priority import (
     annotate_analysis_priority,
     coverage_mode,
     patient_priority_rows,
+    patient_priority_workload,
+    patient_secondary_limit,
     promote_empty_band_a,
 )
 
@@ -62,6 +64,47 @@ class AnalysisPriorityTests(unittest.TestCase):
         self.assertEqual(coverage_mode("full"), "full")
         with self.assertRaises(ValueError):
             coverage_mode("balanced")
+
+    def test_patient_workload_adds_ranked_secondary_candidates(self) -> None:
+        rows = annotate_analysis_priority([
+            {
+                "id": "A", "overall_status": "RECRUITING",
+                "patient_country_site_count": 1,
+                "recall_triage": {"tier": "gater_primary", "score": 8},
+            },
+            {
+                "id": "B-low", "overall_status": "UNKNOWN",
+                "recall_triage": {"tier": "gater_secondary", "score": 7},
+            },
+            {
+                "id": "B-country", "overall_status": "RECRUITING",
+                "patient_country_site_count": 1,
+                "recall_triage": {"tier": "gater_secondary", "score": 4},
+            },
+        ])
+        workload, selected = patient_priority_workload(rows, secondary_limit=1)
+        self.assertEqual([row["id"] for row in workload], ["A", "B-country"])
+        self.assertEqual([row["id"] for row in selected], ["B-country"])
+        self.assertTrue(selected[0]["analysis_priority"]["selected_for_patient_analysis"])
+
+    def test_patient_secondary_limit_is_bounded(self) -> None:
+        self.assertEqual(patient_secondary_limit("10"), 10)
+        with self.assertRaises(ValueError):
+            patient_secondary_limit("41")
+
+    def test_promoted_fallback_counts_against_secondary_budget(self) -> None:
+        rows = annotate_analysis_priority([
+            {
+                "id": f"B-{index}", "overall_status": "RECRUITING",
+                "recall_triage": {"tier": "gater_secondary", "score": index},
+            }
+            for index in range(6)
+        ])
+        with mock.patch.dict(os.environ, {"PATIENT_PRIORITY_FALLBACK_LIMIT": "2"}):
+            promote_empty_band_a(rows)
+        workload, selected = patient_priority_workload(rows, secondary_limit=3)
+        self.assertEqual(len(workload), 3)
+        self.assertEqual(len(selected), 1)
 
 
 if __name__ == "__main__":

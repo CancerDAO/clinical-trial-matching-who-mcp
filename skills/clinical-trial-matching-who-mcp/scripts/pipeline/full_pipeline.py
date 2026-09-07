@@ -42,6 +42,8 @@ from analysis_priority import (
     annotate_analysis_priority,
     coverage_mode,
     patient_priority_rows,
+    patient_priority_workload,
+    patient_secondary_limit,
     promote_empty_band_a,
 )
 from feasibility import WEIGHTS, compute_feasibility
@@ -637,7 +639,12 @@ def prepare(
         + list(recall_triage["deferred_audit"])
     )
     prioritized = promote_empty_band_a(prioritized)
-    live_input = prioritized if mode == "full" else patient_priority_rows(prioritized)
+    patient_limit = patient_secondary_limit() if mode == "patient" else 0
+    patient_workload, _patient_secondary = (
+        patient_priority_workload(prioritized, patient_limit)
+        if mode == "patient" else ([], [])
+    )
+    live_input = prioritized if mode == "full" else patient_workload
     live_target_ids = {
         str(trial.get("id") or "") for trial in live_input if str(trial.get("id") or "")
     }
@@ -692,17 +699,31 @@ def prepare(
             gater_pool.append(trial)
     hard_excluded = generic_hard_excluded + registry_inactive
     if mode == "patient":
-        model_workload = sorted(patient_priority_rows(gater_pool), key=_candidate_rank)
+        patient_model_ids = _trial_ids(patient_workload)
+        model_workload = sorted(
+            [trial for trial in gater_pool if str(trial.get("id") or "") in patient_model_ids],
+            key=_candidate_rank,
+        )
         model_ids = _trial_ids(model_workload)
         deferred_audit = sorted(
             [trial for trial in gater_pool if str(trial.get("id") or "") not in model_ids],
             key=_candidate_rank,
         )
-        gater_primary = model_workload
-        gater_secondary = []
-        selected_secondary = []
-        deferred_secondary = deferred_audit
-        secondary_limit = 0
+        gater_primary = sorted(patient_priority_rows(gater_pool), key=_candidate_rank)
+        gater_secondary = sorted(
+            [trial for trial in gater_pool if (trial.get("analysis_priority") or {}).get("band") == "B"],
+            key=_candidate_rank,
+        )
+        selected_secondary = [
+            trial for trial in model_workload
+            if (trial.get("analysis_priority") or {}).get("band") == "B"
+        ]
+        selected_secondary_ids = _trial_ids(selected_secondary)
+        deferred_secondary = [
+            trial for trial in gater_secondary
+            if str(trial.get("id") or "") not in selected_secondary_ids
+        ]
+        secondary_limit = patient_limit
     else:
         gater_primary = sorted(
             [trial for trial in gater_pool if (trial.get("recall_triage") or {}).get("tier") == "gater_primary"],
