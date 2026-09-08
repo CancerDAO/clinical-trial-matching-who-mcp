@@ -136,6 +136,44 @@ class WhoMcpPipelineTests(unittest.TestCase):
                     json.dumps(query, ensure_ascii=False), r"[\u4e00-\u9fff]"
                 )
 
+    def test_explicit_no_pathogenic_variant_does_not_drive_registry_recall(self):
+        plan = build_baseline_search_plan({
+            "patient_id": "PT-BREAST",
+            "cancer_type": "乳腺癌",
+            "mutations": [
+                "PIK3CA H1047R",
+                "BRCA1/BRCA2 未发现致病性突变",
+            ],
+        })
+        compiled = compile_search_plan_for_mcp(plan)
+        terms = [
+            str(query.get("term") or "")
+            for group in compiled["keyword_groups"]
+            for query in group.get("queries") or []
+        ]
+        self.assertTrue(any("PIK3CA H1047R" in term for term in terms))
+        self.assertTrue(all("BRCA" not in term for term in terms))
+
+    def test_custom_plan_drops_no_pathogenic_variant_query_with_audit(self):
+        plan = normalize_search_plan_for_patient({
+            "keyword_groups": [{
+                "dimension": "disease_biomarker",
+                "label": "Disease and biomarker",
+                "queries": [
+                    {"condition": "breast cancer", "term": "PIK3CA H1047R"},
+                    {"condition": "breast cancer", "term": "BRCA1/2未检出致病变异"},
+                ],
+            }],
+        }, {"cancer_type": "breast cancer"})
+        self.assertEqual(
+            [query["term"] for query in plan["keyword_groups"][0]["queries"]],
+            ["PIK3CA H1047R"],
+        )
+        self.assertEqual(
+            plan["generation_audit"]["negative_biomarker_queries_dropped"], 1,
+        )
+        compile_search_plan_for_mcp(plan)
+
     def test_mcp_boundary_rejects_untranslated_custom_chinese_term(self):
         plan = {
             "keyword_groups": [{

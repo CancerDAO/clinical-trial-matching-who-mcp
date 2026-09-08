@@ -26,6 +26,19 @@ DIMENSION_HINTS = {
     "chinese_registry_terms": ("中文", "chictr", "中国注册"),
 }
 
+_NON_ACTIONABLE_NEGATIVE_BIOMARKER_RE = re.compile(
+    r"(?:未(?:发现|检出|检测到|见)(?:明确|任何)?(?:致病性|致病|有临床意义)?(?:突变|变异)?)"
+    r"|(?:无(?:明确)?(?:致病性|致病|有临床意义)(?:突变|变异))"
+    r"|(?:no\s+(?:known\s+)?(?:pathogenic|clinically\s+significant)\s+(?:mutation|variant)s?)"
+    r"|(?:(?:pathogenic|clinically\s+significant)\s+(?:mutation|variant)s?\s+(?:were\s+)?not\s+detected)",
+    re.IGNORECASE,
+)
+
+
+def _non_actionable_negative_biomarker(value: Any) -> bool:
+    """Return true for explicit no-finding prose that must not drive recall."""
+    return bool(_NON_ACTIONABLE_NEGATIVE_BIOMARKER_RE.search(str(value or "")))
+
 
 def _dimension(group: dict[str, Any]) -> str:
     explicit = str(group.get("dimension") or "").strip()
@@ -169,6 +182,7 @@ def normalize_search_plan_for_patient(
     changed = 0
     annotations_removed = 0
     annotation_only_queries_dropped = 0
+    negative_biomarker_queries_dropped = 0
     for group in normalized.get("keyword_groups") or []:
         if _dimension(group) == "chinese_registry_terms":
             continue
@@ -176,6 +190,9 @@ def normalize_search_plan_for_patient(
         for query in group.get("queries") or []:
             condition = str(query.get("condition") or "").strip()
             term = str(query.get("term") or "").strip()
+            if _non_actionable_negative_biomarker(term):
+                negative_biomarker_queries_dropped += 1
+                continue
             if condition and condition == original and condition != replacement:
                 query["original_condition_language_value"] = condition
                 query["condition"] = replacement
@@ -210,6 +227,7 @@ def normalize_search_plan_for_patient(
     audit["language_normalized_query_fields"] = changed
     audit["source_annotation_removed_query_fields"] = annotations_removed
     audit["source_annotation_only_queries_dropped"] = annotation_only_queries_dropped
+    audit["negative_biomarker_queries_dropped"] = negative_biomarker_queries_dropped
     return normalized
 
 
@@ -244,7 +262,7 @@ def build_baseline_search_plan(patient: dict[str, Any]) -> dict[str, Any]:
     mutations = []
     for value in patient.get("mutations") or []:
         entity, _ = strip_clinical_source_annotation(value)
-        if entity:
+        if entity and not _non_actionable_negative_biomarker(entity):
             mutations.append(entity)
     search_terms = patient.get("search_terms") or {}
     disease = resolve_disease_terms(cancer, search_terms)
@@ -269,6 +287,7 @@ def build_baseline_search_plan(patient: dict[str, Any]) -> dict[str, Any]:
     biomarker_terms = mutations or [
         str(key).strip() for key, value in (patient.get("biomarkers_known") or {}).items()
         if value not in (None, "", "unknown")
+        and not _non_actionable_negative_biomarker(f"{key} {value}")
     ]
     anchor = biomarker_terms[0] if biomarker_terms else "precision oncology"
 
