@@ -640,7 +640,7 @@ def prepare(
     )
     prioritized = promote_empty_band_a(prioritized)
     patient_limit = patient_secondary_limit() if mode == "patient" else 0
-    patient_workload, _patient_secondary = (
+    patient_workload, _patient_supplements = (
         patient_priority_workload(prioritized, patient_limit)
         if mode == "patient" else ([], [])
     )
@@ -718,6 +718,10 @@ def prepare(
             trial for trial in model_workload
             if (trial.get("analysis_priority") or {}).get("band") == "B"
         ]
+        selected_deferred = [
+            trial for trial in model_workload
+            if (trial.get("analysis_priority") or {}).get("band") == "C"
+        ]
         selected_secondary_ids = _trial_ids(selected_secondary)
         deferred_secondary = [
             trial for trial in gater_secondary
@@ -735,6 +739,7 @@ def prepare(
         )
         secondary_limit = _secondary_gater_limit()
         selected_secondary = gater_secondary[:secondary_limit]
+        selected_deferred = []
         deferred_secondary = gater_secondary[secondary_limit:]
         for trial in deferred_secondary:
             trial["recall_triage"]["execution_disposition"] = "deferred_secondary_limit"
@@ -768,6 +773,9 @@ def prepare(
                 str(trial.get("id") or "") for trial in gater_pool
                 if (trial.get("analysis_priority") or {}).get("promoted")
             ),
+            "selected_band_b_count": len(selected_secondary),
+            "selected_band_c_count": len(selected_deferred),
+            "supplement_selected_count": len(selected_secondary) + len(selected_deferred),
         },
         "secondary_gater_policy": {
             "limit": secondary_limit,
@@ -775,9 +783,9 @@ def prepare(
             "selected_count": len(selected_secondary),
             "deferred_count": len(deferred_secondary),
             "policy": (
-                "Primary candidates and at most the configured number of ranked "
-                "secondary candidates receive immediate model Gater analysis. "
-                "Remaining secondary candidates retain an auditable deferred disposition."
+                "Primary candidates and a bounded supplement receive immediate model "
+                "Gater analysis. Patient mode ranks Band B first, then fills unused "
+                "capacity with active or in-country Band C candidates."
             ),
         },
     })

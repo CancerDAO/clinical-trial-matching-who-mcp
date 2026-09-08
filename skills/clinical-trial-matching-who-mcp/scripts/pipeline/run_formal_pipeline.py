@@ -339,6 +339,7 @@ def prepare_formal(args: argparse.Namespace) -> dict[str, Any]:
     search_stats = result.get("search_stats") or {}
     portal_delta = result.get("portal_delta") or {}
     live_registry = result.get("live_registry_audit") or {}
+    analysis_priority = (result.get("preanalysis_filter") or {}).get("analysis_priority") or {}
     retrieval_complete = bool(result.get("retrieval_complete"))
     state = {
         "schema_version": "formal-pipeline-state-v1",
@@ -364,6 +365,7 @@ def prepare_formal(args: argparse.Namespace) -> dict[str, Any]:
         "deferred_audit_count": len(result.get("deferred_audit_trials") or []),
         "coverage_mode": result.get("coverage_mode", "full"),
         "gater_expected_count": len(result["analysis_candidate_ids"]),
+        "analysis_priority": analysis_priority,
         "retrieval_audit": {
             "complete": retrieval_complete,
             "global_truncated": bool(search_stats.get("global_truncated")),

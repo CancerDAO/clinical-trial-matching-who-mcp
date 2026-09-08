@@ -118,7 +118,7 @@ def patient_secondary_limit(value: str | None = None) -> int:
 def patient_priority_workload(
     trials: list[dict[str, Any]], secondary_limit: int | None = None
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    """Return every Band A row plus a bounded, deterministic Band B supplement."""
+    """Return Band A plus a bounded B/C supplement for sparse patient cohorts."""
     limit = patient_secondary_limit(
         str(secondary_limit) if secondary_limit is not None else None
     )
@@ -127,22 +127,37 @@ def patient_priority_workload(
         bool((row.get("analysis_priority") or {}).get("promoted"))
         for row in primary
     )
+    rank = lambda row: (
+        0 if (row.get("analysis_priority") or {}).get("in_country") else 1,
+        0 if (row.get("analysis_priority") or {}).get("recruitment_status") == "active" else 1,
+        -int((row.get("recall_triage") or {}).get("score") or 0),
+        -float((row.get("feasibility") or {}).get("composite") or 0),
+        str(row.get("id") or ""),
+    )
+    available = max(0, limit - promoted_count)
     secondary = sorted(
         [
             row for row in trials
             if (row.get("analysis_priority") or {}).get("band") == "B"
         ],
-        key=lambda row: (
-            0 if (row.get("analysis_priority") or {}).get("in_country") else 1,
-            0 if (row.get("analysis_priority") or {}).get("recruitment_status") == "active" else 1,
-            -int((row.get("recall_triage") or {}).get("score") or 0),
-            -float((row.get("feasibility") or {}).get("composite") or 0),
-            str(row.get("id") or ""),
-        ),
+        key=rank,
     )
-    selected = secondary[:max(0, limit - promoted_count)]
+    selected_b = secondary[:available]
+    remaining = max(0, available - len(selected_b))
+    eligible_c = sorted([
+        row for row in trials
+        if (row.get("analysis_priority") or {}).get("band") == "C"
+        and (row.get("analysis_priority") or {}).get("recruitment_status") != "inactive"
+        and (
+            (row.get("analysis_priority") or {}).get("in_country")
+            or (row.get("analysis_priority") or {}).get("recruitment_status") == "active"
+        )
+    ], key=rank)
+    selected_c = eligible_c[:remaining]
+    selected = selected_b + selected_c
     for row in selected:
         priority = dict(row.get("analysis_priority") or {})
         priority["selected_for_patient_analysis"] = True
+        priority["supplement_source_band"] = priority.get("band")
         row["analysis_priority"] = priority
     return primary + selected, selected

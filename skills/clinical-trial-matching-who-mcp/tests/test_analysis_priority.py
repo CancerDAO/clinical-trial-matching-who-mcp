@@ -87,6 +87,44 @@ class AnalysisPriorityTests(unittest.TestCase):
         self.assertEqual([row["id"] for row in selected], ["B-country"])
         self.assertTrue(selected[0]["analysis_priority"]["selected_for_patient_analysis"])
 
+    def test_sparse_a_and_b_use_eligible_band_c_supplements(self) -> None:
+        rows = annotate_analysis_priority([
+            {
+                "id": "A", "overall_status": "RECRUITING",
+                "patient_country_site_count": 1,
+                "recall_triage": {"tier": "gater_primary", "score": 9},
+            },
+            {
+                "id": "B", "overall_status": "UNKNOWN",
+                "recall_triage": {"tier": "gater_secondary", "score": 7},
+            },
+            {
+                "id": "C-country", "overall_status": "UNKNOWN",
+                "patient_country_site_count": 1,
+                "recall_triage": {"tier": "deferred_audit", "score": 5},
+            },
+            {
+                "id": "C-active", "overall_status": "RECRUITING",
+                "recall_triage": {"tier": "deferred_audit", "score": 4},
+            },
+            {
+                "id": "C-weak", "overall_status": "UNKNOWN",
+                "recall_triage": {"tier": "deferred_audit", "score": 8},
+            },
+            {
+                "id": "C-inactive", "overall_status": "COMPLETED",
+                "patient_country_site_count": 1,
+                "recall_triage": {"tier": "deferred_audit", "score": 10},
+            },
+        ])
+        workload, selected = patient_priority_workload(rows, secondary_limit=3)
+        self.assertEqual([row["id"] for row in workload], ["A", "B", "C-country", "C-active"])
+        self.assertEqual([row["id"] for row in selected], ["B", "C-country", "C-active"])
+        self.assertEqual(
+            [row["analysis_priority"]["supplement_source_band"] for row in selected],
+            ["B", "C", "C"],
+        )
+
     def test_patient_secondary_limit_is_bounded(self) -> None:
         self.assertEqual(patient_secondary_limit("10"), 10)
         with self.assertRaises(ValueError):
