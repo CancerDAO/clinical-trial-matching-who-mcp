@@ -111,6 +111,58 @@ class WhoMcpPipelineTests(unittest.TestCase):
         )
         self.assertEqual(source["keyword_groups"][0]["queries"][0]["condition"], "结直肠癌")
 
+    def test_mixed_breast_terms_from_model_are_normalized_before_mcp(self):
+        terms = (
+            "HER2(0) (免疫组化符合三 negative 表型)",
+            "三 negative breast cancer 分子表型",
+        )
+        for term in terms:
+            with self.subTest(term=term):
+                plan = normalize_search_plan_for_patient({
+                    "keyword_groups": [{
+                        "dimension": "disease_biomarker",
+                        "label": "Disease and biomarker",
+                        "queries": [{"condition": "breast cancer", "term": term}],
+                    }],
+                }, {"cancer_type": "乳腺癌"})
+                compiled = compile_search_plan_for_mcp(plan)
+                for group in compiled["keyword_groups"]:
+                    for query in group["queries"]:
+                        self.assertNotRegex(
+                            json.dumps(query, ensure_ascii=False), r"[\u4e00-\u9fff]"
+                        )
+
+    def test_unknown_global_chinese_term_is_dropped_and_group_refilled(self):
+        plan = normalize_search_plan_for_patient({
+            "keyword_groups": [{
+                "dimension": "disease_biomarker",
+                "label": "Disease and biomarker",
+                "queries": [{"condition": "breast cancer", "term": "未知中文概念"}],
+            }],
+        }, {
+            "cancer_type": "乳腺癌",
+            "search_terms": {"biomarker_terms": ["PIK3CA H1047R"]},
+        })
+        self.assertEqual(plan["keyword_groups"][0]["queries"], [{
+            "condition": "breast cancer",
+            "term": "PIK3CA H1047R",
+            "query_semantics": "deterministic_safe_fallback",
+        }])
+        self.assertEqual(
+            plan["generation_audit"]["untranslated_global_queries_dropped"], 1
+        )
+        self.assertEqual(plan["generation_audit"]["global_groups_refilled"], 1)
+        compile_search_plan_for_mcp(plan)
+
+    def test_her2_zero_alone_does_not_infer_triple_negative(self):
+        plan = build_baseline_search_plan({
+            "patient_id": "PT-BREAST",
+            "cancer_type": "乳腺癌",
+            "mutations": ["HER2 IHC 0"],
+        })
+        terms = json.dumps(plan, ensure_ascii=False).casefold()
+        self.assertNotIn("triple-negative", terms)
+
     def test_all_mcp_query_terms_are_english_after_chinese_patient_input(self):
         plan = build_baseline_search_plan({
             "patient_id": "PT-CN",

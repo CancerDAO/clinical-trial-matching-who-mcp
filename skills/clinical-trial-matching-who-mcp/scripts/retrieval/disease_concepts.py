@@ -61,6 +61,16 @@ _CONCEPTS: tuple[dict[str, Any], ...] = (
 )
 
 _CLINICAL_QUERY_TRANSLATIONS: tuple[tuple[str, str], ...] = (
+    ("三阴性乳腺癌", "triple-negative breast cancer"),
+    ("三阴乳腺癌", "triple-negative breast cancer"),
+    ("三 negative breast cancer", "triple-negative breast cancer"),
+    ("三阴性", "triple-negative"),
+    ("三 negative", "triple-negative"),
+    ("免疫组织化学", "immunohistochemistry"),
+    ("免疫组化", "immunohistochemistry"),
+    ("分子表型", "molecular phenotype"),
+    ("表型", "phenotype"),
+    ("符合", "consistent with"),
     ("晚期实体瘤", "advanced solid tumor"),
     ("泛实体瘤", "solid tumor"),
     ("实体瘤", "solid tumor"),
