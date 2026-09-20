@@ -183,6 +183,23 @@ def normalize_search_plan_for_patient(
     annotations_removed = 0
     annotation_only_queries_dropped = 0
     negative_biomarker_queries_dropped = 0
+    untranslated_global_queries_dropped = 0
+    global_groups_refilled = 0
+    supplied_terms = patient.get("search_terms") or {}
+    supplied_biomarkers = [
+        str(value).strip() for value in supplied_terms.get("biomarker_terms") or []
+        if str(value).strip() and not contains_cjk(value)
+    ]
+    fallback_anchor = supplied_biomarkers[0] if supplied_biomarkers else "precision oncology"
+    fallback_terms = {
+        "disease_biomarker": fallback_anchor,
+        "pan_tumor": fallback_anchor,
+        "combination_targets": f"{fallback_anchor} combination therapy",
+        "pathway_resistance": f"{fallback_anchor} pathway resistance",
+        "named_drug": "investigational targeted therapy",
+        "cell_therapy": "cell therapy",
+        "immune": "immunotherapy",
+    }
     for group in normalized.get("keyword_groups") or []:
         if _dimension(group) == "chinese_registry_terms":
             continue
@@ -214,6 +231,9 @@ def normalize_search_plan_for_patient(
                     query.setdefault(f"original_{field}_language_value", value)
                     query[field] = translated
                     changed += 1
+            if contains_cjk(query.get("condition")) or contains_cjk(query.get("term")):
+                untranslated_global_queries_dropped += 1
+                continue
             if str(query.get("condition") or "").strip() and not str(query.get("term") or "").strip():
                 annotation_only_queries_dropped += 1
                 continue
@@ -222,12 +242,25 @@ def normalize_search_plan_for_patient(
                 continue
             cleaned_queries.append(query)
         group["queries"] = cleaned_queries
+        dimension = _dimension(group)
+        source = str(group.get("source") or "").strip().casefold()
+        if not cleaned_queries and dimension in fallback_terms and source not in {
+            "chictr", "regional", "local_registry",
+        }:
+            group["queries"] = [{
+                "condition": "solid tumor" if dimension == "pan_tumor" else replacement,
+                "term": fallback_terms[dimension],
+                "query_semantics": "deterministic_safe_fallback",
+            }]
+            global_groups_refilled += 1
     audit = normalized.setdefault("generation_audit", {})
     audit["disease_normalization"] = disease
     audit["language_normalized_query_fields"] = changed
     audit["source_annotation_removed_query_fields"] = annotations_removed
     audit["source_annotation_only_queries_dropped"] = annotation_only_queries_dropped
     audit["negative_biomarker_queries_dropped"] = negative_biomarker_queries_dropped
+    audit["untranslated_global_queries_dropped"] = untranslated_global_queries_dropped
+    audit["global_groups_refilled"] = global_groups_refilled
     return normalized
 
 
@@ -248,6 +281,10 @@ and hard_exclude.first_line_only plus explicit molecular mismatch rules. Do not 
 country is applied later by deterministic routing. Also return `mcp_country` as the canonical
 English current-country name when it is explicit in the patient data. This is only a candidate;
 the pipeline validates it and never lets it override an explicit patient country.
+For every group except chinese_registry_terms, condition and term MUST contain English and
+standard biomedical symbols only, with no Chinese commentary. Use the patient's vetted
+search_terms when supplied. Never infer triple-negative breast cancer from HER2 status alone;
+that phenotype requires explicit ER-negative, PR-negative, and HER2-negative evidence.
 
 Patient:
 {patient_text}
@@ -284,7 +321,11 @@ def build_baseline_search_plan(patient: dict[str, Any]) -> dict[str, Any]:
         str(value).strip() for value in search_terms.get("chinese_terms") or []
         if str(value).strip()
     ]
-    biomarker_terms = mutations or [
+    supplied_biomarkers = [
+        str(value).strip() for value in search_terms.get("biomarker_terms") or []
+        if str(value).strip() and not contains_cjk(value)
+    ]
+    biomarker_terms = (supplied_biomarkers + mutations) or [
         str(key).strip() for key, value in (patient.get("biomarkers_known") or {}).items()
         if value not in (None, "", "unknown")
         and not _non_actionable_negative_biomarker(f"{key} {value}")
