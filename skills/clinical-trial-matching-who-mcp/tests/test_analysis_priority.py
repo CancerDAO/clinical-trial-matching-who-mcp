@@ -87,6 +87,28 @@ class AnalysisPriorityTests(unittest.TestCase):
         self.assertEqual([row["id"] for row in selected], ["B-country"])
         self.assertTrue(selected[0]["analysis_priority"]["selected_for_patient_analysis"])
 
+    def test_direct_disease_match_outranks_cross_tumour_molecular_match(self) -> None:
+        rows = annotate_analysis_priority([
+            {
+                "id": "NSCLC-KRAS", "overall_status": "RECRUITING",
+                "patient_country_site_count": 1,
+                "recall_triage": {
+                    "tier": "gater_secondary", "score": 9,
+                    "disease_matches": [], "molecular_matches": ["kras g12c"],
+                },
+            },
+            {
+                "id": "CRC-DISEASE", "overall_status": "UNKNOWN",
+                "recall_triage": {
+                    "tier": "gater_secondary", "score": 4,
+                    "disease_matches": ["colorectal cancer"], "molecular_matches": [],
+                },
+            },
+        ])
+        workload, selected = patient_priority_workload(rows, secondary_limit=1)
+        self.assertEqual([row["id"] for row in workload], ["CRC-DISEASE"])
+        self.assertEqual([row["id"] for row in selected], ["CRC-DISEASE"])
+
     def test_sparse_a_and_b_use_eligible_band_c_supplements(self) -> None:
         rows = annotate_analysis_priority([
             {
@@ -126,6 +148,8 @@ class AnalysisPriorityTests(unittest.TestCase):
         )
 
     def test_patient_secondary_limit_is_bounded(self) -> None:
+        with mock.patch.dict(os.environ, {}, clear=True):
+            self.assertEqual(patient_secondary_limit(), 20)
         self.assertEqual(patient_secondary_limit("10"), 10)
         with self.assertRaises(ValueError):
             patient_secondary_limit("41")

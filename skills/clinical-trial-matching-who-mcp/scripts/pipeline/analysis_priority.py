@@ -5,7 +5,7 @@ import os
 from typing import Any
 
 
-PRIORITY_VERSION = "patient-priority-v2"
+PRIORITY_VERSION = "patient-priority-v3"
 ACTIVE_STATUSES = {
     "RECRUITING", "NOT_YET_RECRUITING", "ENROLLING_BY_INVITATION",
 }
@@ -31,6 +31,20 @@ def _status(trial: dict[str, Any]) -> str:
     if live == "active" or snapshot in ACTIVE_STATUSES:
         return "active"
     return "unknown"
+
+
+def _patient_rank(trial: dict[str, Any]) -> tuple[Any, ...]:
+    """Prefer direct disease evidence before cross-tumour molecular matches."""
+    priority = trial.get("analysis_priority") or {}
+    triage = trial.get("recall_triage") or {}
+    return (
+        0 if triage.get("disease_matches") else 1,
+        0 if priority.get("in_country") else 1,
+        0 if priority.get("recruitment_status") == "active" else 1,
+        -int(triage.get("score") or 0),
+        -float((trial.get("feasibility") or {}).get("composite") or 0),
+        str(trial.get("id") or ""),
+    )
 
 
 def annotate_analysis_priority(trials: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -80,13 +94,7 @@ def promote_empty_band_a(trials: list[dict[str, Any]]) -> list[dict[str, Any]]:
         raise ValueError("PATIENT_PRIORITY_FALLBACK_LIMIT must be between 0 and 40")
     ranked = sorted(
         [row for row in trials if (row.get("analysis_priority") or {}).get("band") == "B"],
-        key=lambda row: (
-            0 if (row.get("analysis_priority") or {}).get("in_country") else 1,
-            0 if (row.get("analysis_priority") or {}).get("recruitment_status") == "active" else 1,
-            -int((row.get("recall_triage") or {}).get("score") or 0),
-            -float((row.get("feasibility") or {}).get("composite") or 0),
-            str(row.get("id") or ""),
-        ),
+        key=_patient_rank,
     )
     for row in ranked[:limit]:
         priority = dict(row.get("analysis_priority") or {})
@@ -104,7 +112,7 @@ def patient_priority_rows(trials: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 def patient_secondary_limit(value: str | None = None) -> int:
     raw = value if value is not None else os.environ.get(
-        "PATIENT_PRIORITY_SECONDARY_LIMIT", "10"
+        "PATIENT_PRIORITY_SECONDARY_LIMIT", "20"
     )
     try:
         limit = int(raw)
@@ -127,20 +135,13 @@ def patient_priority_workload(
         bool((row.get("analysis_priority") or {}).get("promoted"))
         for row in primary
     )
-    rank = lambda row: (
-        0 if (row.get("analysis_priority") or {}).get("in_country") else 1,
-        0 if (row.get("analysis_priority") or {}).get("recruitment_status") == "active" else 1,
-        -int((row.get("recall_triage") or {}).get("score") or 0),
-        -float((row.get("feasibility") or {}).get("composite") or 0),
-        str(row.get("id") or ""),
-    )
     available = max(0, limit - promoted_count)
     secondary = sorted(
         [
             row for row in trials
             if (row.get("analysis_priority") or {}).get("band") == "B"
         ],
-        key=rank,
+        key=_patient_rank,
     )
     selected_b = secondary[:available]
     remaining = max(0, available - len(selected_b))
@@ -152,7 +153,7 @@ def patient_priority_workload(
             (row.get("analysis_priority") or {}).get("in_country")
             or (row.get("analysis_priority") or {}).get("recruitment_status") == "active"
         )
-    ], key=rank)
+    ], key=_patient_rank)
     selected_c = eligible_c[:remaining]
     selected = selected_b + selected_c
     for row in selected:
