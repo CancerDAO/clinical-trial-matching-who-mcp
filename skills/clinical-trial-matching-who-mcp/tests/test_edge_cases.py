@@ -172,6 +172,34 @@ class ReportSafetyTests(unittest.TestCase):
         self.assertIn('data-access="domestic"', html)
         self.assertIn("<b>1</b><span>国内可及</span>", html)
 
+    def test_country_scoped_report_omits_redundant_geography_and_uses_registry_search(self):
+        patient = {"patient_id": "P1", "country": "China", "mutations": []}
+        trial = {
+            "id": "ChiCTR1800018013",
+            "resolved_source_url": "https://www.chictr.org.cn/showproj.aspx?proj=30484",
+            "display_title": "Trial", "phases": [],
+            "mechanism_category": {"category": "other", "label_zh": "其他", "label_en": "Other"},
+            "country_assessment": {"class": "domestic_registry"},
+            "gating": {"verdict": "conditional", "satisfied": [], "pending": [], "exclusion_reasons": []},
+            "risk_context": [], "efficacy_context": "",
+        }
+        payload = {
+            "language": "zh-CN", "patient": patient, "trials": [trial],
+            "counts": {"match": 0, "conditional": 1, "exclude": 0},
+            "geography_audit": {"domestic_registry": 1}, "portal_delta": {},
+            "country_routing": {"scope": "patient_country", "mcp_country": "China"},
+            "database_as_of": "2026-07-09", "database_metadata": {},
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            output = Path(tmp) / "report.html"
+            render_html(payload, output)
+            html = output.read_text(encoding="utf-8")
+        self.assertNotIn('class="filters"', html)
+        self.assertNotIn("<span>国内可及</span>", html)
+        self.assertNotIn("<span>境外</span>", html)
+        self.assertNotIn("showproj.aspx", html)
+        self.assertIn("searchproj.html?officialname=&amp;regno=ChiCTR1800018013", html)
+
     def test_renderer_rejects_untrusted_language_and_active_url_schemes(self):
         patient = {"patient_id": "P1", "country": "China", "mutations": []}
         trial = {
