@@ -34,10 +34,7 @@ def safe_external_url(value: Any, *, fallback: str = "#") -> str:
 def registry_source_url(value: Any, trial_id: Any) -> str:
  trial_id_text = str(trial_id or "").strip()
  if re.fullmatch(r"ChiCTR[A-Za-z0-9-]+", trial_id_text, flags=re.IGNORECASE):
-  return (
-   "https://www.chictr.org.cn/searchproj.html?officialname=&regno="
-   f"{quote(trial_id_text, safe='')}&regstatus=&subjectid=&title="
-  )
+  return "https://trialsearch.who.int/Trial2.aspx?TrialID=" + quote(trial_id_text, safe="")
  return safe_external_url(value)
 
 
@@ -45,8 +42,10 @@ def registry_fallback_url(trial_id: Any) -> str:
  trial_id_text = str(trial_id or "").strip()
  if not re.fullmatch(r"ChiCTR[A-Za-z0-9-]+", trial_id_text, flags=re.IGNORECASE):
   return ""
- query = f'site:chictr.org.cn "{trial_id_text}"'
- return f"https://www.bing.com/search?q={quote(query, safe='')}"
+ return (
+  "https://www.chictr.org.cn/searchproj.html?officialname=&regno="
+  f"{quote(trial_id_text, safe='')}&regstatus=&subjectid=&title="
+ )
 
 
 def _legacy_development_evidence_html(trial: dict[str, Any], zh: bool) -> str:
@@ -256,8 +255,8 @@ def render_html(p: dict[str, Any], path: Path) -> None:
    if fallback_url:
     registry_meta=(
      f'<span class="nct">{esc(t.get("id"))}</span>'
-     f'<a class="registry-link" href="{esc(trial_url)}" target="_blank" rel="noopener">{T("官方登记页","Official registry")}</a>'
-     f'<a class="registry-link" href="{esc(fallback_url)}" target="_blank" rel="noopener">{T("备用检索","Fallback search")}</a>'
+     f'<a class="registry-link" href="{esc(trial_url)}" target="_blank" rel="noopener">{T("WHO 登记页","WHO registry")}</a>'
+     f'<a class="registry-link" href="{esc(fallback_url)}" target="_blank" rel="noopener">{T("ChiCTR 检索","ChiCTR search")}</a>'
      f'<button class="copy-registry" type="button" data-copy-id="{esc(t.get("id"))}">{T("复制注册号","Copy ID")}</button>'
     )
    else:
