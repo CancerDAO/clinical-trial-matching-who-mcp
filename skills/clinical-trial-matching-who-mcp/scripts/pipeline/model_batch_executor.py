@@ -29,6 +29,8 @@ EXECUTION_CONTRACT = [
     "Return strict JSON only and preserve the requested output schema.",
     "Every input trial ID must appear exactly once in analyzed_trials.",
     "Unknown clinical facts must remain unknown; do not invent eligibility evidence.",
+    "An unselected, absent, or empty treatment field is unknown, not evidence that the patient never received that treatment; state no prior exposure only when the patient source explicitly says so.",
+    "Call only match or conditional rows candidates; excluded recall records are audit records, not candidate trials.",
 ]
 
 
