@@ -198,11 +198,11 @@ class ReportSafetyTests(unittest.TestCase):
         self.assertNotIn("<span>国内可及</span>", html)
         self.assertNotIn("<span>境外</span>", html)
         self.assertNotIn("showproj.aspx", html)
+        self.assertIn("trialsearch.who.int/Trial2.aspx?TrialID=ChiCTR1800018013", html)
         self.assertIn("searchproj.html?officialname=&amp;regno=ChiCTR1800018013", html)
-        self.assertIn("www.bing.com/search?q=site%3Achictr.org.cn%20%22ChiCTR1800018013%22", html)
         self.assertIn('data-copy-id="ChiCTR1800018013"', html)
-        self.assertIn("官方登记页", html)
-        self.assertIn("备用检索", html)
+        self.assertIn("WHO 登记页", html)
+        self.assertIn("ChiCTR 检索", html)
 
     def test_renderer_rejects_untrusted_language_and_active_url_schemes(self):
         patient = {"patient_id": "P1", "country": "China", "mutations": []}
