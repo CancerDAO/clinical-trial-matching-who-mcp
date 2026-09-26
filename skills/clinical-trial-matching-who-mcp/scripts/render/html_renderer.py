@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from report_translation import patient_visible_evaluations
-from urllib.parse import urlsplit
+from urllib.parse import quote, urlsplit
 
 from mechanism_categories import CATEGORY_ORDER, classify_mechanism
 
@@ -29,6 +29,16 @@ def safe_external_url(value: Any, *, fallback: str = "#") -> str:
  except ValueError:
   return fallback
  return str(value).strip() if parsed.scheme.casefold() in {"http", "https"} and parsed.hostname else fallback
+
+
+def registry_source_url(value: Any, trial_id: Any) -> str:
+ trial_id_text = str(trial_id or "").strip()
+ if re.fullmatch(r"ChiCTR[A-Za-z0-9-]+", trial_id_text, flags=re.IGNORECASE):
+  return (
+   "https://www.chictr.org.cn/searchproj.html?officialname=&regno="
+   f"{quote(trial_id_text, safe='')}&regstatus=&subjectid=&title="
+  )
+ return safe_external_url(value)
 
 
 def _legacy_development_evidence_html(trial: dict[str, Any], zh: bool) -> str:
@@ -174,6 +184,9 @@ def render_html(p: dict[str, Any], path: Path) -> None:
  if p.get("language") not in {"zh-CN", "en"}:
   raise ValueError("Report language must be 'zh-CN' or 'en'")
  zh=p["language"]=="zh-CN"; patient=p["patient"]; trials=p["trials"]; loc=patient.get("country","")
+ country_routing=p.get("country_routing") or {}
+ recall_country=str(country_routing.get("mcp_country") or "").strip()
+ country_scoped=country_routing.get("scope") in {"patient_country","fixed_country"} and bool(recall_country)
  # Recall and mechanism matching can be multi-label, but presentation is not.
  trials=list({str(t.get("id") or t.get("trial_uid") or index):t for index,t in enumerate(trials)}.values())
  T=lambda z,e:z if zh else e
@@ -230,7 +243,7 @@ def render_html(p: dict[str, Any], path: Path) -> None:
    lis="".join(f"<li>{esc(x)}</li>" for x in evidence) or f"<li>{T(chr(38656)+chr(20013)+chr(24515)+chr(22797)+chr(26680)+chr(27491)+chr(24335)+chr(26041)+chr(26696),'Formal protocol review required')}</li>"
    risk_html="".join(f"<li>{esc(x)}</li>" for x in t["risk_context"])
    development_html=development_evidence_html(t,zh)
-   trial_url=safe_external_url(t.get("resolved_source_url"))
+   trial_url=registry_source_url(t.get("resolved_source_url"),t.get("id"))
    reported_phases = [
     str(value).strip() for value in (t.get('phases') or [])
     if str(value).strip().casefold() not in {'', 'n/a', 'na', 'none', 'null', 'unknown'}
@@ -241,8 +254,6 @@ def render_html(p: dict[str, Any], path: Path) -> None:
   item_word=T(chr(39033),"items")
   sections.append(f"""<section class="mechanism-group"><div class="banner {banner_style[category]}"><div class="num">{section_index:02d}</div><div class="bmeta"><div class="beyebrow">Treatment mechanism</div><div class="btitle">{esc(m['label_zh' if zh else 'label_en'])}</div></div><div class="cnt" data-item-word="{esc(item_word)}">{len(items)} {item_word}</div></div><div class="tier-desc">{esc(category_desc[category])}</div>{''.join(cards)}</section>""")
  c=p["counts"]; delta=p.get("portal_delta") or {}; geo=p.get("geography_audit") or {}
- country_routing=p.get("country_routing") or {}
- recall_country=str(country_routing.get("mcp_country") or "").strip()
  if country_routing.get("scope") in {"patient_country","fixed_country"} and recall_country:
   title=(f"为您筛选的{recall_country}相关临床试验" if zh else f"{recall_country}-scope clinical trials selected for you")
  else:
@@ -263,9 +274,11 @@ def render_html(p: dict[str, Any], path: Path) -> None:
 :root{--bg:#fafaf7;--surface:#fff;--alt:#f3f3ef;--border:#d9d8d1;--text:#20211f;--muted:#666963;--brand:#173d5a;--wine:#7b263e;--green:#245c43;--amber:#8e5d0b}*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:15px/1.6 Arial,'Microsoft YaHei',sans-serif}.wrap{max-width:900px;margin:auto;padding:24px 18px 80px}.hero{background:#173d5a;color:white;padding:27px;border-radius:8px}.hero .eyebrow{font-size:11px;text-transform:uppercase;opacity:.8}.hero h1{margin:6px 0 12px;font-size:27px}.snap{display:flex;flex-wrap:wrap;gap:7px}.snap span{border:1px solid #ffffff44;background:#ffffff16;padding:3px 9px;font-size:12px}.disc{margin:13px 0;padding:11px 14px;background:#fff2d9;border-left:4px solid var(--amber)}.overview{background:white;border:1px solid var(--border);padding:16px;margin:12px 0}.ov-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:8px}.ov-cell{background:var(--alt);padding:10px;text-align:center}.ov-cell b{display:block;color:var(--brand);font-size:23px}.filters{display:flex;gap:7px;flex-wrap:wrap;margin:14px 0}.filters button{border:1px solid var(--border);background:white;padding:6px 12px;cursor:pointer}.filters button.on{background:var(--brand);color:white}.banner{display:flex;align-items:center;gap:13px;color:white;padding:14px 16px;border-radius:7px;margin:25px 0 8px}.num{border:1px solid #ffffff88;border-radius:50%;width:40px;height:40px;display:grid;place-items:center}.bmeta{flex:1}.beyebrow{font-size:10px;text-transform:uppercase;opacity:.8}.btitle{font-size:18px;font-weight:700}.cnt{font-size:12px}.b-target{background:#74243d}.b-pathway{background:#183f5d}.b-immune{background:#315e50}.b-cell{background:#5c4072}.b-basket{background:#73552d}.b-marker{background:#526472}.b-other{background:#62625e}.tier-desc{font-size:12px;color:var(--muted);margin:0 2px 9px}details{background:white;border:1px solid var(--border);border-left:4px solid var(--amber);margin:7px 0}details.match{border-left-color:var(--green)}details.exclude{border-left-color:#888}summary{display:flex;gap:10px;padding:12px;cursor:pointer;list-style:none}.tier-dot{width:8px;height:8px;border-radius:50%;background:var(--amber);margin-top:7px}.match .tier-dot{background:var(--green)}.exclude .tier-dot{background:#888}.s-main{flex:1;min-width:0}.s-title{font-weight:700;overflow-wrap:anywhere}.s-meta{display:flex;flex-wrap:wrap;gap:5px;margin-top:6px}.chip,.nct{font-size:10.5px;padding:2px 7px;background:var(--alt);border-radius:5px}.nct{color:var(--brand);padding-left:0;background:none}.body{padding:0 16px 14px 31px}.body h4{font-size:11px;text-transform:uppercase;margin:10px 0 3px}.body ul{margin:0 0 5px;padding-left:19px}.evidence-list li{margin-bottom:9px}.evidence-list div{color:var(--muted);font-size:12px}.next{background:var(--alt);border-left:3px solid var(--wine);padding:8px 10px;margin-top:9px}.is-hidden{display:none!important}footer{margin-top:32px;border-top:1px solid var(--border);padding-top:12px;font-size:11px;color:var(--muted)}@media(max-width:650px){.wrap{padding:12px}.ov-grid{grid-template-columns:1fr 1fr}}
 """
  buttons=[("all",T("\u5168\u90e8","All"))]+access_defs
- filters="".join(f'<button class="{"on" if key=="all" else ""}" data-filter="{key}">{esc(label)}</button>' for key,label in buttons)
- overview=[(len(trials),T("\u5019\u9009\u8bd5\u9a8c","Candidates")),(geo.get("domestic_named",0)+geo.get("domestic_registry",0),T("\u56fd\u5185\u53ef\u53ca","In-country access")),(geo.get("country_unverified",0),T("\u56fd\u5bb6\u8bb0\u5f55\u5f85\u6838\u5b9e","Country unverified")),(geo.get("overseas",0),T("\u5883\u5916","Overseas"))]
- ov="".join(f'<div class="ov-cell"><b>{n}</b><span>{esc(label)}</span></div>' for n,label in overview)
+ filters="" if country_scoped else "".join(f'<button class="{"on" if key=="all" else ""}" data-filter="{key}">{esc(label)}</button>' for key,label in buttons)
+ overview=[(len(trials),T("\u5206\u6790\u8bb0\u5f55","Analyzed records")),(geo.get("domestic_named",0)+geo.get("domestic_registry",0),T("\u56fd\u5185\u53ef\u53ca","In-country access")),(geo.get("country_unverified",0),T("\u56fd\u5bb6\u8bb0\u5f55\u5f85\u6838\u5b9e","Country unverified")),(geo.get("overseas",0),T("\u5883\u5916","Overseas"))]
+ ov="" if country_scoped else "".join(f'<div class="ov-cell"><b>{n}</b><span>{esc(label)}</span></div>' for n,label in overview)
+ geography_html="" if country_scoped else f'<section class="overview"><div class="ov-grid">{ov}</div></section>'
+ filters_html="" if country_scoped else f'<div class="filters">{filters}</div>'
  manifest=p.get("run_manifest") or {}; mc=manifest.get("counts") or {}
  manifest_title=T("\u5168\u6d41\u7a0b\u8fd0\u884c\u6e05\u5355","Full-run manifest")
  manifest_rows=[
@@ -279,13 +292,13 @@ def render_html(p: dict[str, Any], path: Path) -> None:
  manifest_html=f'<section class="overview"><h3>{esc(manifest_title)}</h3><div class="ov-grid">{"".join(f"<div class=ov-cell><b>{esc(value)}</b><span>{esc(label)}</span></div>" for label,value in manifest_rows)}</div><p class="manifest-hash">{esc(prepared_hash_label)}: {esc(manifest.get("prepared_sha256"))}<br>{esc(analysis_hash_label)}: {esc(manifest.get("analysis_sha256"))}</p></section>'
  patient_summary=patient_summary_html(p,zh)
  decision_html=decision_report_html(p,zh)
- script="""function applyFilter(f){document.querySelectorAll('.mechanism-group').forEach(g=>{g.querySelectorAll('details.trial').forEach(x=>{const hide=f!=='all'&&x.dataset.access!==f;x.classList.toggle('is-hidden',hide);});const n=g.querySelectorAll('details.trial:not(.is-hidden)').length;g.classList.toggle('is-hidden',n===0);const c=g.querySelector('.cnt');c.textContent=n+' '+c.dataset.itemWord;});}document.querySelectorAll('.filters button').forEach(b=>b.addEventListener('click',()=>{document.querySelectorAll('.filters button').forEach(x=>x.classList.remove('on'));b.classList.add('on');applyFilter(b.dataset.filter);}));applyFilter('all');"""
+ script="" if country_scoped else """function applyFilter(f){document.querySelectorAll('.mechanism-group').forEach(g=>{g.querySelectorAll('details.trial').forEach(x=>{const hide=f!=='all'&&x.dataset.access!==f;x.classList.toggle('is-hidden',hide);});const n=g.querySelectorAll('details.trial:not(.is-hidden)').length;g.classList.toggle('is-hidden',n===0);const c=g.querySelector('.cnt');c.textContent=n+' '+c.dataset.itemWord;});}document.querySelectorAll('.filters button').forEach(b=>b.addEventListener('click',()=>{document.querySelectorAll('.filters button').forEach(x=>x.classList.remove('on'));b.classList.add('on');applyFilter(b.dataset.filter);}));applyFilter('all');"""
  eyebrow=T(chr(20020)+chr(24202)+chr(35797)+chr(39564)+chr(21305)+chr(37197)+chr(25253)+chr(21578)+" · "+chr(24739)+chr(32773)+chr(29256),"Clinical trial matching report · Patient edition")
  database_label=T(chr(25968)+chr(25454)+chr(24211)+chr(26356)+chr(26032)+chr(26102)+chr(38388),"Database as of")
  schema_label=T("MCP 数据结构版本","MCP schema")
  delta_label=T("WHO 门户增量","WHO portal delta")
  trial_word=T("项试验","trial(s)")
- doc=f"""<!doctype html><html lang="{p['language']}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>{esc(title)} \u00b7 {esc(patient.get('patient_id'))}</title><style>{css}</style></head><body><main class="wrap"><header class="hero"><div class="eyebrow">{eyebrow}</div><h1>{esc(title)}</h1><div class="snap"><span>{esc(patient.get('patient_id'))}</span><span>{esc(patient.get('cancer_type'))} \u00b7 {esc(patient.get('stage'))}</span><span>{esc(' / '.join(patient.get('mutations') or []))}</span><span>{esc(loc)}</span></div></header><div class="disc">{esc(disclaimer)}</div>{f'<div class="disc">{esc(validation_notice)}</div>' if validation_notice else ''}<section class="overview"><div class="ov-grid">{ov}</div></section>{manifest_html}{patient_summary}{decision_html}<div class="filters">{filters}</div>{''.join(sections)}<footer>{database_label}: {esc(p['database_as_of'])} \u00b7 {esc(schema_label)} {esc(p['database_metadata'].get('schema_version'))} \u00b7 {esc(delta_label)}: {esc(delta.get('status'))}, {esc(delta.get('returned') if delta.get('returned') is not None else 0)} {esc(trial_word)}</footer></main><script>{script}</script></body></html>"""
+ doc=f"""<!doctype html><html lang="{p['language']}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>{esc(title)} \u00b7 {esc(patient.get('patient_id'))}</title><style>{css}</style></head><body><main class="wrap"><header class="hero"><div class="eyebrow">{eyebrow}</div><h1>{esc(title)}</h1><div class="snap"><span>{esc(patient.get('patient_id'))}</span><span>{esc(patient.get('cancer_type'))} \u00b7 {esc(patient.get('stage'))}</span><span>{esc(' / '.join(patient.get('mutations') or []))}</span><span>{esc(loc)}</span></div></header><div class="disc">{esc(disclaimer)}</div>{f'<div class="disc">{esc(validation_notice)}</div>' if validation_notice else ''}{geography_html}{manifest_html}{patient_summary}{decision_html}{filters_html}{''.join(sections)}<footer>{database_label}: {esc(p['database_as_of'])} \u00b7 {esc(schema_label)} {esc(p['database_metadata'].get('schema_version'))} \u00b7 {esc(delta_label)}: {esc(delta.get('status'))}, {esc(delta.get('returned') if delta.get('returned') is not None else 0)} {esc(trial_word)}</footer></main><script>{script}</script></body></html>"""
  path.write_text(doc,encoding="utf-8")
 
 
