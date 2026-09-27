@@ -34,18 +34,11 @@ def safe_external_url(value: Any, *, fallback: str = "#") -> str:
 def registry_source_url(value: Any, trial_id: Any) -> str:
  trial_id_text = str(trial_id or "").strip()
  if re.fullmatch(r"ChiCTR[A-Za-z0-9-]+", trial_id_text, flags=re.IGNORECASE):
-  return "https://trialsearch.who.int/Trial2.aspx?TrialID=" + quote(trial_id_text, safe="")
+  return (
+   "https://www.chictr.org.cn/searchproj.html?officialname=&regno="
+   f"{quote(trial_id_text, safe='')}&regstatus=&subjectid=&title="
+  )
  return safe_external_url(value)
-
-
-def registry_fallback_url(trial_id: Any) -> str:
- trial_id_text = str(trial_id or "").strip()
- if not re.fullmatch(r"ChiCTR[A-Za-z0-9-]+", trial_id_text, flags=re.IGNORECASE):
-  return ""
- return (
-  "https://www.chictr.org.cn/searchproj.html?officialname=&regno="
-  f"{quote(trial_id_text, safe='')}&regstatus=&subjectid=&title="
- )
 
 
 def _legacy_development_evidence_html(trial: dict[str, Any], zh: bool) -> str:
@@ -251,23 +244,17 @@ def render_html(p: dict[str, Any], path: Path) -> None:
    risk_html="".join(f"<li>{esc(x)}</li>" for x in t["risk_context"])
    development_html=development_evidence_html(t,zh)
    trial_url=registry_source_url(t.get("resolved_source_url"),t.get("id"))
-   fallback_url=registry_fallback_url(t.get("id"))
-   if fallback_url:
-    registry_meta=(
-     f'<span class="nct">{esc(t.get("id"))}</span>'
-     f'<a class="registry-link" href="{esc(trial_url)}" target="_blank" rel="noopener">{T("WHO 登记页","WHO registry")}</a>'
-     f'<a class="registry-link" href="{esc(fallback_url)}" target="_blank" rel="noopener">{T("ChiCTR 检索","ChiCTR search")}</a>'
-     f'<button class="copy-registry" type="button" data-copy-id="{esc(t.get("id"))}">{T("复制注册号","Copy ID")}</button>'
-    )
-   else:
-    registry_meta=f'<a class="nct" href="{esc(trial_url)}" target="_blank" rel="noopener">{esc(t.get("id"))}</a>'
+   registry_meta=(
+    f'<div class="registry-row"><a class="registry-link" href="{esc(trial_url)}" '
+    f'target="_blank" rel="noopener">{T("官方登记页","Official registry")} · {esc(t.get("id"))}</a></div>'
+   )
    reported_phases = [
     str(value).strip() for value in (t.get('phases') or [])
     if str(value).strip().casefold() not in {'', 'n/a', 'na', 'none', 'null', 'unknown'}
    ]
    phase_label = '/'.join(reported_phases) or T('阶段未注明', 'Phase not reported')
    cards.append(f'<span id="{esc(trial_anchor(t.get("id")))}"></span>')
-   cards.append(f"""<details class="trial {ga['verdict']}" data-access="{display_access_key}" data-verdict="{esc(ga['verdict'])}"><summary><span class="tier-dot"></span><div class="s-main"><div class="s-title">{esc(t['display_title'])}</div><div class="s-meta">{registry_meta}<span class="chip chip-ph">{esc(phase_label)}</span><span class="chip chip-mech">{esc(m['label_zh' if zh else 'label_en'])}</span><span class="chip chip-access">{esc(access)}</span><span class="chip chip-verdict">{esc(verdict)}</span></div></div><span class="caret">\u25be</span></summary><div class="body"><p>{esc(t['efficacy_context'])}</p>{development_html}<h4>{T(chr(20837)+chr(25490)+chr(26680)+chr(23545),'Eligibility review')}</h4><ul>{lis}</ul><h4>{T(chr(39118)+chr(38505)+chr(32972)+chr(26223),'Risk context')}</h4><ul>{risk_html}</ul><div class="next"><b>{T(chr(19979)+chr(19968)+chr(27493),'Next step')} \u00b7 </b>{esc(access)}</div></div></details>""")
+   cards.append(f"""<details class="trial {ga['verdict']}" data-access="{display_access_key}" data-verdict="{esc(ga['verdict'])}"><summary><span class="tier-dot"></span><div class="s-main"><div class="s-title">{esc(t['display_title'])}</div>{registry_meta}<div class="s-meta"><span class="chip chip-ph">{esc(phase_label)}</span><span class="chip chip-mech">{esc(m['label_zh' if zh else 'label_en'])}</span><span class="chip chip-access">{esc(access)}</span><span class="chip chip-verdict">{esc(verdict)}</span></div></div><span class="caret">\u25be</span></summary><div class="body"><p>{esc(t['efficacy_context'])}</p>{development_html}<h4>{T(chr(20837)+chr(25490)+chr(26680)+chr(23545),'Eligibility review')}</h4><ul>{lis}</ul><h4>{T(chr(39118)+chr(38505)+chr(32972)+chr(26223),'Risk context')}</h4><ul>{risk_html}</ul><div class="next"><b>{T(chr(19979)+chr(19968)+chr(27493),'Next step')} \u00b7 </b>{esc(access)}</div></div></details>""")
   item_word=T(chr(39033),"items")
   sections.append(f"""<section class="mechanism-group"><div class="banner {banner_style[category]}"><div class="num">{section_index:02d}</div><div class="bmeta"><div class="beyebrow">Treatment mechanism</div><div class="btitle">{esc(m['label_zh' if zh else 'label_en'])}</div></div><div class="cnt" data-item-word="{esc(item_word)}">{len(items)} {item_word}</div></div><div class="tier-desc">{esc(category_desc[category])}</div>{''.join(cards)}</section>""")
  c=p["counts"]; delta=p.get("portal_delta") or {}; geo=p.get("geography_audit") or {}
@@ -288,7 +275,7 @@ def render_html(p: dict[str, Any], path: Path) -> None:
  if report_warning_messages:
   disclaimer += " " + " ".join(message for message in report_warning_messages if message)
  css="""
-:root{--bg:#fafaf7;--surface:#fff;--alt:#f3f3ef;--border:#d9d8d1;--text:#20211f;--muted:#666963;--brand:#173d5a;--wine:#7b263e;--green:#245c43;--amber:#8e5d0b}*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:15px/1.6 Arial,'Microsoft YaHei',sans-serif}.wrap{max-width:900px;margin:auto;padding:24px 18px 80px}.hero{background:#173d5a;color:white;padding:27px;border-radius:8px}.hero .eyebrow{font-size:11px;text-transform:uppercase;opacity:.8}.hero h1{margin:6px 0 12px;font-size:27px}.snap{display:flex;flex-wrap:wrap;gap:7px}.snap span{border:1px solid #ffffff44;background:#ffffff16;padding:3px 9px;font-size:12px}.disc{margin:13px 0;padding:11px 14px;background:#fff2d9;border-left:4px solid var(--amber)}.overview{background:white;border:1px solid var(--border);padding:16px;margin:12px 0}.ov-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:8px}.ov-cell{background:var(--alt);padding:10px;text-align:center}.ov-cell b{display:block;color:var(--brand);font-size:23px}.filters{display:flex;gap:7px;flex-wrap:wrap;margin:14px 0}.filters button{border:1px solid var(--border);background:white;padding:6px 12px;cursor:pointer}.filters button.on{background:var(--brand);color:white}.banner{display:flex;align-items:center;gap:13px;color:white;padding:14px 16px;border-radius:7px;margin:25px 0 8px}.num{border:1px solid #ffffff88;border-radius:50%;width:40px;height:40px;display:grid;place-items:center}.bmeta{flex:1}.beyebrow{font-size:10px;text-transform:uppercase;opacity:.8}.btitle{font-size:18px;font-weight:700}.cnt{font-size:12px}.b-target{background:#74243d}.b-pathway{background:#183f5d}.b-immune{background:#315e50}.b-cell{background:#5c4072}.b-basket{background:#73552d}.b-marker{background:#526472}.b-other{background:#62625e}.tier-desc{font-size:12px;color:var(--muted);margin:0 2px 9px}details{background:white;border:1px solid var(--border);border-left:4px solid var(--amber);margin:7px 0}details.match{border-left-color:var(--green)}details.exclude{border-left-color:#888}summary{display:flex;gap:10px;padding:12px;cursor:pointer;list-style:none}.tier-dot{width:8px;height:8px;border-radius:50%;background:var(--amber);margin-top:7px}.match .tier-dot{background:var(--green)}.exclude .tier-dot{background:#888}.s-main{flex:1;min-width:0}.s-title{font-weight:700;overflow-wrap:anywhere}.s-meta{display:flex;flex-wrap:wrap;align-items:center;gap:5px;margin-top:6px}.chip,.nct,.registry-link,.copy-registry{font-size:10.5px;padding:2px 7px;background:var(--alt);border-radius:5px}.nct{color:var(--brand);padding-left:0;background:none}.registry-link{color:var(--brand);text-decoration:none}.copy-registry{border:1px solid var(--border);color:var(--brand);cursor:pointer}.body{padding:0 16px 14px 31px}.body h4{font-size:11px;text-transform:uppercase;margin:10px 0 3px}.body ul{margin:0 0 5px;padding-left:19px}.evidence-list li{margin-bottom:9px}.evidence-list div{color:var(--muted);font-size:12px}.next{background:var(--alt);border-left:3px solid var(--wine);padding:8px 10px;margin-top:9px}.is-hidden{display:none!important}footer{margin-top:32px;border-top:1px solid var(--border);padding-top:12px;font-size:11px;color:var(--muted)}@media(max-width:650px){.wrap{padding:12px}.ov-grid{grid-template-columns:1fr 1fr}}
+:root{--bg:#fafaf7;--surface:#fff;--alt:#f3f3ef;--border:#d9d8d1;--text:#20211f;--muted:#666963;--brand:#173d5a;--wine:#7b263e;--green:#245c43;--amber:#8e5d0b}*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:15px/1.6 Arial,'Microsoft YaHei',sans-serif}.wrap{max-width:900px;margin:auto;padding:24px 18px 80px}.hero{background:#173d5a;color:white;padding:27px;border-radius:8px}.hero .eyebrow{font-size:11px;text-transform:uppercase;opacity:.8}.hero h1{margin:6px 0 12px;font-size:27px}.snap{display:flex;flex-wrap:wrap;gap:7px}.snap span{border:1px solid #ffffff44;background:#ffffff16;padding:3px 9px;font-size:12px}.disc{margin:13px 0;padding:11px 14px;background:#fff2d9;border-left:4px solid var(--amber)}.overview{background:white;border:1px solid var(--border);padding:16px;margin:12px 0}.ov-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:8px}.ov-cell{background:var(--alt);padding:10px;text-align:center}.ov-cell b{display:block;color:var(--brand);font-size:23px}.filters{display:flex;gap:7px;flex-wrap:wrap;margin:14px 0}.filters button{border:1px solid var(--border);background:white;padding:6px 12px;cursor:pointer}.filters button.on{background:var(--brand);color:white}.banner{display:flex;align-items:center;gap:13px;color:white;padding:14px 16px;border-radius:7px;margin:25px 0 8px}.num{border:1px solid #ffffff88;border-radius:50%;width:40px;height:40px;display:grid;place-items:center}.bmeta{flex:1}.beyebrow{font-size:10px;text-transform:uppercase;opacity:.8}.btitle{font-size:18px;font-weight:700}.cnt{font-size:12px}.b-target{background:#74243d}.b-pathway{background:#183f5d}.b-immune{background:#315e50}.b-cell{background:#5c4072}.b-basket{background:#73552d}.b-marker{background:#526472}.b-other{background:#62625e}.tier-desc{font-size:12px;color:var(--muted);margin:0 2px 9px}details{background:white;border:1px solid var(--border);border-left:4px solid var(--amber);margin:7px 0}details.match{border-left-color:var(--green)}details.exclude{border-left-color:#888}summary{display:flex;gap:10px;padding:12px;cursor:pointer;list-style:none}.tier-dot{width:8px;height:8px;border-radius:50%;background:var(--amber);margin-top:7px}.match .tier-dot{background:var(--green)}.exclude .tier-dot{background:#888}.s-main{flex:1;min-width:0}.s-title{font-weight:700;overflow-wrap:anywhere}.registry-row{margin-top:8px}.registry-link{display:inline-flex;align-items:center;padding:5px 10px;border:1px solid #b9cbe0;border-radius:4px;background:#e8f0f8;color:var(--brand);font-size:12px;font-weight:700;text-decoration:none}.registry-link:hover{background:#dbe8f4;border-color:#8cabc9}.s-meta{display:flex;flex-wrap:wrap;align-items:center;gap:5px;margin-top:7px}.chip{font-size:10.5px;padding:2px 7px;background:var(--alt);border-radius:5px}.body{padding:0 16px 14px 31px}.body h4{font-size:11px;text-transform:uppercase;margin:10px 0 3px}.body ul{margin:0 0 5px;padding-left:19px}.evidence-list li{margin-bottom:9px}.evidence-list div{color:var(--muted);font-size:12px}.next{background:var(--alt);border-left:3px solid var(--wine);padding:8px 10px;margin-top:9px}.is-hidden{display:none!important}footer{margin-top:32px;border-top:1px solid var(--border);padding-top:12px;font-size:11px;color:var(--muted)}@media(max-width:650px){.wrap{padding:12px}.ov-grid{grid-template-columns:1fr 1fr}}
 """
  buttons=[("all",T("\u5168\u90e8","All"))]+access_defs
  filters="" if country_scoped else "".join(f'<button class="{"on" if key=="all" else ""}" data-filter="{key}">{esc(label)}</button>' for key,label in buttons)
@@ -310,8 +297,7 @@ def render_html(p: dict[str, Any], path: Path) -> None:
  patient_summary=patient_summary_html(p,zh)
  decision_html=decision_report_html(p,zh)
  filter_script="" if country_scoped else """function applyFilter(f){document.querySelectorAll('.mechanism-group').forEach(g=>{g.querySelectorAll('details.trial').forEach(x=>{const hide=f!=='all'&&x.dataset.access!==f;x.classList.toggle('is-hidden',hide);});const n=g.querySelectorAll('details.trial:not(.is-hidden)').length;g.classList.toggle('is-hidden',n===0);const c=g.querySelector('.cnt');c.textContent=n+' '+c.dataset.itemWord;});}document.querySelectorAll('.filters button').forEach(b=>b.addEventListener('click',()=>{document.querySelectorAll('.filters button').forEach(x=>x.classList.remove('on'));b.classList.add('on');applyFilter(b.dataset.filter);}));applyFilter('all');"""
- copy_script="""document.querySelectorAll('.copy-registry').forEach(button=>button.addEventListener('click',async event=>{event.preventDefault();event.stopPropagation();const value=button.dataset.copyId;let copied=false;try{if(navigator.clipboard&&window.isSecureContext){await navigator.clipboard.writeText(value);copied=true;}}catch(error){}if(!copied){const input=document.createElement('textarea');input.value=value;input.style.position='fixed';input.style.opacity='0';document.body.appendChild(input);input.select();copied=document.execCommand('copy');input.remove();}if(copied){const original=button.textContent;button.textContent='"""+T("已复制","Copied")+"""';setTimeout(()=>button.textContent=original,1500);}}));"""
- script=filter_script+copy_script
+ script=filter_script
  eyebrow=T(chr(20020)+chr(24202)+chr(35797)+chr(39564)+chr(21305)+chr(37197)+chr(25253)+chr(21578)+" · "+chr(24739)+chr(32773)+chr(29256),"Clinical trial matching report · Patient edition")
  database_label=T(chr(25968)+chr(25454)+chr(24211)+chr(26356)+chr(26032)+chr(26102)+chr(38388),"Database as of")
  schema_label=T("MCP 数据结构版本","MCP schema")
